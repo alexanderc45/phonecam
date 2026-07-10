@@ -58,6 +58,32 @@ local smoothingTau = 0.06        -- seconds; smoothing time constant
 local positionScale   = 1.0      -- meters -> world units multiplier
 local positionEnabled = true     -- 6DOF translation on/off (filter path only)
 
+-- Hold mode + mirror correction (rotation only; see handleOsc's isRot branch).
+-- ARKit reports poses in a LANDSCAPE device frame, but users film holding the
+-- phone PORTRAIT, so raw pitch/yaw/roll land on the wrong camera axes. Two
+-- device-local corrections fix this without touching the world change-of-basis:
+--   * mirrorRotation: quaternion conjugate (negate x,y,z) — undoes an improper
+--     / mirrored mapping (roll appears inverted).
+--   * holdMode 0..3: relabels axes by rotating holdMode*90deg about the phone's
+--     local z (view) axis, i.e. how the phone is physically held.
+--       0 = landscape, 1 = portrait (default; how the user films),
+--       2 = upside-down, 3 = landscape-rotated.
+-- Both are applied per-packet; the sin/cos for the hold rotation is precomputed
+-- on change (recomputeHold) rather than per packet.
+local holdMode = 1               -- default 1 = portrait
+local mirrorRotation = false
+local holdS, holdC = 0, 1        -- sin/cos(holdMode*90deg / 2)
+local function recomputeHold()
+  -- Signed angle so mode 3 is -90deg (not +270); representation only — +270
+  -- and -90 are the same rotation, but this matches the spec's table exactly.
+  local deg = holdMode * 90
+  if deg > 180 then deg = deg - 360 end     -- 0, +90, +180, -90
+  local theta = deg * math.pi / 180
+  holdS = math.sin(theta / 2)
+  holdC = math.cos(theta / 2)
+end
+recomputeHold()
+
 -- ARKit -> BeamNG position axis mapping. The base swap is (x,y,z)->(x,-z,y);
 -- each output axis has its own sign here so signs can be flipped trivially
 -- during in-game verification without touching the swap logic below.
@@ -255,7 +281,25 @@ local function handleOsc(data)
       return
     end
     local inv = 1 / math.sqrt(n2)
-    phoneQuat = phoneToBeamNG({ x*inv, y*inv, z*inv, w*inv })
+    local qx, qy, qz, qw = x*inv, y*inv, z*inv, w*inv
+
+    -- Device-local corrections BEFORE the world change-of-basis (phoneToBeamNG).
+    -- 1) Mirror: quaternion conjugate (negate x,y,z) flips an improper/mirrored
+    --    mapping (fixes inverted roll).
+    if mirrorRotation then qx, qy, qz = -qx, -qy, -qz end
+    -- 2) Hold mode: post-multiply by R = rotation of holdMode*90deg about the
+    --    device-local z (view) axis, R = (0, 0, holdS, holdC). This is a
+    --    local-frame relabel, so we POST-multiply q' = q (x) R (NOT conjugate):
+    --    the recenter reference is post-multiplied too, so the refQuat^-1 *
+    --    phoneQuat delta ends up correctly conjugated. Hamilton product of
+    --    q=(qx,qy,qz,qw) with (0,0,s,c):
+    local s, c = holdS, holdC
+    local hx = qx*c + qy*s
+    local hy = qy*c - qx*s
+    local hz = qz*c + qw*s
+    local hw = qw*c - qz*s
+
+    phoneQuat = phoneToBeamNG({ hx, hy, hz, hw })
     stats.oscRot = stats.oscRot + 1
     if stats.oscRot == 1 then print('phoneCamera: first OSC rotation received - phone is live') end
     onFirstSample()
@@ -368,6 +412,7 @@ local function onExtensionLoaded()
   log('I', 'phoneCamera', 'the free camera (Shift+C) still uses the legacy writer. Stream from your phone.')
   log('I', 'phoneCamera', 'console: extensions.phoneCamera.recenter() / setEnabled(bool) / setSmoothing(s) /')
   log('I', 'phoneCamera', '         setPort(n) / setOscPort(n) / setPositionScale(n) / setPositionEnabled(bool)')
+  log('I', 'phoneCamera', '         setHoldMode(0..3) / setMirror(bool)  (fix portrait/landscape axis scramble)')
 end
 
 local function onExtensionUnloaded()
@@ -521,6 +566,8 @@ M.getUiStatus = function()
     positionEnabled = positionEnabled,
     positionScale = positionScale,
     smoothingTau = smoothingTau,
+    holdMode = holdMode,
+    mirrorRotation = mirrorRotation,
 
     jsonHost = listenHost, jsonPort = listenPort, jsonOpen = udp ~= nil,
     oscHost = oscHost,     oscPort = oscPort,      oscOpen = udpOsc ~= nil,
@@ -589,6 +636,26 @@ end
 M.setPositionEnabled = function(v)
   positionEnabled = v and true or false
   log('I', 'phoneCamera', 'position enabled = ' .. tostring(positionEnabled))
+end
+
+-- Device-local hold mode 0..3 (0/90/180/270 deg about the phone's view axis).
+-- Clamp+round to a valid index. A mapping change invalidates the recenter
+-- reference, so force a recenter.
+M.setHoldMode = function(n)
+  n = math.floor((tonumber(n) or 0) + 0.5)
+  if n < 0 then n = 0 elseif n > 3 then n = 3 end
+  holdMode = n
+  recomputeHold()
+  pendingRecenter = true
+  log('I', 'phoneCamera', 'hold mode = ' .. holdMode)
+end
+
+-- Mirror (all-axis quaternion conjugate) toggle. Also invalidates the
+-- reference, so force a recenter.
+M.setMirror = function(v)
+  mirrorRotation = v and true or false
+  pendingRecenter = true
+  log('I', 'phoneCamera', 'mirror rotation = ' .. tostring(mirrorRotation))
 end
 
 M.onExtensionLoaded = onExtensionLoaded

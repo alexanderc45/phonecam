@@ -13,14 +13,196 @@
 //   the expression returns nil (-> JS null) when the extension isn't
 //   loaded yet. Fire-and-forget controls call engineLua without a callback.
 //
-// Kept boring on purpose: AngularJS 1.x, array-notation DI, ES5-ish JS.
+// TEMPLATE: kept INLINE (not templateUrl). A relative templateUrl of
+//   'modules/apps/phoneCamera/app.html' does not resolve in the BeamNG UI
+//   app host and left the panel blank. With replace:true the template must
+//   have a SINGLE root element; the scoped <style> lives nested INSIDE that
+//   root .pcam div (AngularJS tolerates this — it is what the old app.html
+//   already did). app.html was deleted so the template has one source.
+//
+// Kept boring on purpose: AngularJS 1.x, array-notation DI, ES5-ish JS
+// (no template literals / arrow fns).
 // ============================================================
 angular.module('beamng.apps')
 .directive('phoneCameraApp', ['$interval', 'bngApi', function ($interval, bngApi) {
+
+  // Human-readable hold-mode names, indexed by mode 0..3.
+  var HOLD_NAMES = ['Landscape', 'Portrait', 'Upside-down', 'Landscape-R'];
+
+  var TEMPLATE = [
+'<div class="pcam">',
+'  <style>',
+'    .pcam {',
+'      width: 100%; height: 100%; box-sizing: border-box;',
+'      padding: 8px 9px; overflow: auto;',
+'      background: rgba(18, 20, 24, 0.88);',
+'      color: #d8dde3;',
+'      font-family: \'Segoe UI\', Arial, sans-serif;',
+'      font-size: 11px; line-height: 1.35;',
+'      border-radius: 4px;',
+'      -webkit-user-select: none; user-select: none;',
+'    }',
+'    .pcam .num, .pcam .val {',
+'      font-family: \'Consolas\', \'Courier New\', monospace;',
+'      color: #eef2f6;',
+'    }',
+'    .pcam .hdr {',
+'      display: flex; align-items: center; justify-content: space-between;',
+'      margin-bottom: 6px;',
+'    }',
+'    .pcam .title {',
+'      font-weight: 700; letter-spacing: 0.5px; font-size: 11px;',
+'      color: #9aa4af; text-transform: uppercase;',
+'    }',
+'    .pcam .badge {',
+'      font-family: \'Consolas\', \'Courier New\', monospace;',
+'      font-size: 10px; font-weight: 700;',
+'      padding: 2px 6px; border-radius: 3px; white-space: nowrap;',
+'    }',
+'    .pcam .badge.green { background: #1e5b2f; color: #7ff0a0; }',
+'    .pcam .badge.amber { background: #6b5410; color: #ffd873; }',
+'    .pcam .badge.red   { background: #6b1e1e; color: #ff9a9a; }',
+'    .pcam .badge.grey  { background: #333941; color: #aab3bd; }',
+'    .pcam .row {',
+'      display: flex; justify-content: space-between; align-items: baseline;',
+'      padding: 1px 0;',
+'    }',
+'    .pcam .row .k { color: #8b95a0; }',
+'    .pcam .sec {',
+'      margin: 6px 0 2px; padding-top: 5px;',
+'      border-top: 1px solid rgba(255,255,255,0.08);',
+'      color: #6f7982; font-size: 9px; letter-spacing: 0.6px;',
+'      text-transform: uppercase;',
+'    }',
+'    .pcam .tag {',
+'      font-family: \'Consolas\', \'Courier New\', monospace;',
+'      font-size: 10px; padding: 1px 5px; border-radius: 3px;',
+'      background: #2a2f36; color: #9aa4af;',
+'    }',
+'    .pcam .tag.on { background: #244a63; color: #8fd0ff; }',
+'    .pcam .err { color: #ff9a9a; }',
+'    .pcam .muted { color: #6f7982; }',
+'    .pcam button.recenter {',
+'      width: 100%; margin: 4px 0 2px;',
+'      padding: 6px; border: none; border-radius: 3px; cursor: pointer;',
+'      background: #2e6ea6; color: #fff; font-weight: 700; font-size: 11px;',
+'    }',
+'    .pcam button.recenter:hover { background: #367fbf; }',
+'    .pcam button.recenter:active { background: #285f8f; }',
+'    .pcam button.hold {',
+'      border: none; border-radius: 3px; cursor: pointer;',
+'      padding: 3px 8px; font-size: 10px; font-weight: 700;',
+'      font-family: \'Consolas\', \'Courier New\', monospace;',
+'      background: #3a4048; color: #cdd6df;',
+'    }',
+'    .pcam button.hold:hover { background: #454c55; }',
+'    .pcam button.hold:active { background: #313740; }',
+'    .pcam .ctl {',
+'      display: flex; align-items: center; justify-content: space-between;',
+'      padding: 3px 0;',
+'    }',
+'    .pcam .ctl label { color: #b7c0c9; cursor: pointer; }',
+'    .pcam .ctl input[type="range"] { flex: 1; margin: 0 8px; min-width: 60px; }',
+'    .pcam .ctl .val { min-width: 40px; text-align: right; }',
+'    .pcam input[type="checkbox"] { cursor: pointer; }',
+'  </style>',
+'',
+'  <div class="hdr">',
+'    <span class="title">Phone Cam</span>',
+'    <span class="badge" ng-class="conn.cls">{{ conn.label }}</span>',
+'  </div>',
+'',
+'  <!-- Live status (guarded: null until the extension answers) -->',
+'  <div ng-if="s">',
+'    <div class="row">',
+'      <span class="k">rotation</span>',
+'      <span><span class="num">{{ s.rotRate | number:0 }}</span> <span class="muted">/s</span></span>',
+'    </div>',
+'    <div class="row">',
+'      <span class="k">filter tick / applied</span>',
+'      <span>',
+'        <span class="num">{{ s.filterTickRate | number:0 }}</span>',
+'        <span class="muted">/</span>',
+'        <span class="num">{{ s.filterAppliedRate | number:0 }}</span>',
+'        <span class="muted">/s</span>',
+'      </span>',
+'    </div>',
+'    <div class="row" ng-if="s.deltaAngle != null">',
+'      <span class="k">delta angle</span>',
+'      <span class="num">{{ s.deltaAngle | number:1 }}&deg;</span>',
+'    </div>',
+'    <div class="row" ng-if="s.posDelta">',
+'      <span class="k">pos delta (m)</span>',
+'      <span class="num">{{ s.posDelta.x | number:2 }} {{ s.posDelta.y | number:2 }} {{ s.posDelta.z | number:2 }}</span>',
+'    </div>',
+'    <div class="row">',
+'      <span class="k">camera path</span>',
+'      <span class="tag" ng-class="{on: s.isFreeCamera}">{{ s.isFreeCamera ? \'FREE CAM\' : \'filter\' }}</span>',
+'    </div>',
+'',
+'    <div class="sec">datagrams</div>',
+'    <div class="row">',
+'      <span class="k">json / osc rot / pos</span>',
+'      <span class="num">{{ s.dgJson }} / {{ s.dgOscRot }} / {{ s.dgOscPos }}</span>',
+'    </div>',
+'    <div class="row">',
+'      <span class="k">osc other / unknown</span>',
+'      <span class="num">{{ s.dgOscOther }} / {{ s.dgUnknown }}</span>',
+'    </div>',
+'    <div class="row">',
+'      <span class="k">ports json / osc</span>',
+'      <span class="num">',
+'        {{ s.jsonPort }}<span class="muted" ng-if="!s.jsonOpen"> x</span> /',
+'        {{ s.oscPort }}<span class="muted" ng-if="!s.oscOpen"> x</span>',
+'      </span>',
+'    </div>',
+'',
+'    <div class="row err" ng-if="s.rotFailsTotal > 0">',
+'      <span class="k">rot fails</span>',
+'      <span class="num">{{ s.rotFailsTotal }}',
+'        <span class="muted">(t{{ s.rotFailsTags }} s{{ s.rotFailsShort }} n{{ s.rotFailsNonfinite }} q{{ s.rotFailsNorm }})</span>',
+'      </span>',
+'    </div>',
+'  </div>',
+'',
+'  <div ng-if="!s" class="muted" style="padding:6px 0;">Waiting for extension...</div>',
+'',
+'  <!-- Controls -->',
+'  <div class="sec">controls</div>',
+'  <button class="recenter" ng-click="recenter()">RECENTER</button>',
+'',
+'  <div class="ctl">',
+'    <label><input type="checkbox" ng-model="ctrl.enabled" ng-change="applyEnabled()"> Enabled</label>',
+'    <label><input type="checkbox" ng-model="ctrl.positionEnabled" ng-change="applyPosition()"> Position</label>',
+'  </div>',
+'',
+'  <div class="sec">orientation fix</div>',
+'  <div class="ctl">',
+'    <span class="k">hold</span>',
+'    <button class="hold" ng-click="cycleHold()">{{ holdName }}</button>',
+'    <label><input type="checkbox" ng-model="mirror" ng-change="applyMirror()"> Mirror</label>',
+'  </div>',
+'',
+'  <div class="ctl">',
+'    <span class="k">scale</span>',
+'    <input type="range" min="0.5" max="10" step="0.1"',
+'           ng-model="ctrl.positionScale" ng-change="applyScale()">',
+'    <span class="val">{{ ctrl.positionScale | number:1 }}x</span>',
+'  </div>',
+'',
+'  <div class="ctl">',
+'    <span class="k">smooth</span>',
+'    <input type="range" min="0.01" max="0.5" step="0.01"',
+'           ng-model="ctrl.smoothingTau" ng-change="applySmoothing()">',
+'    <span class="val">{{ ctrl.smoothingTau | number:2 }}s</span>',
+'  </div>',
+'</div>'
+  ].join('\n');
+
   return {
     restrict: 'E',
     replace: true,
-    templateUrl: 'modules/apps/phoneCamera/app.html',
+    template: TEMPLATE,
     link: function (scope, element, attrs) {
 
       // Lua expression: nil-safe so a not-yet-loaded extension yields null.
@@ -32,13 +214,19 @@ angular.module('beamng.apps')
 
       scope.s = null;               // latest raw status snapshot from Lua
       scope.conn = { label: 'CONNECTING...', cls: 'grey' };
-      scope.ctrlReady = false;      // control models seeded from first poll?
+      scope.ctrlReady = false;      // slider models seeded from first poll?
       scope.ctrl = {                // input models (app owns these after seed)
         enabled: true,
         positionEnabled: true,
         positionScale: 1.0,
         smoothingTau: 0.06
       };
+
+      // Hold/Mirror mirror Lua state EVERY poll (unlike the sliders): a mode
+      // change auto-recenters in Lua, so the UI must always reflect the truth.
+      scope.holdMode = 1;
+      scope.holdName = HOLD_NAMES[1];
+      scope.mirror = false;
 
       function computeConn(d) {
         if (!d) { return { label: 'EXTENSION NOT LOADED', cls: 'grey' }; }
@@ -57,7 +245,7 @@ angular.module('beamng.apps')
         if (destroyed) { return; }
         scope.s = d || null;
         scope.conn = computeConn(d);
-        // Seed the control inputs once from real Lua state, then let the app
+        // Seed the slider inputs once from real Lua state, then let the app
         // own them (so polling never fights a slider mid-drag).
         if (d && !scope.ctrlReady) {
           scope.ctrl.enabled = !!d.enabled;
@@ -66,6 +254,12 @@ angular.module('beamng.apps')
           scope.ctrl.smoothingTau = d.smoothingTau;
           scope.ctrlReady = true;
         }
+        // Hold/Mirror track Lua state on every poll.
+        if (d && typeof d.holdMode === 'number') {
+          scope.holdMode = d.holdMode;
+          scope.holdName = HOLD_NAMES[d.holdMode] || ('mode ' + d.holdMode);
+        }
+        if (d) { scope.mirror = !!d.mirrorRotation; }
       }
 
       function poll() {
@@ -96,6 +290,15 @@ angular.module('beamng.apps')
         var v = Number(scope.ctrl.smoothingTau);
         if (!isFinite(v)) { return; }
         bngApi.engineLua('extensions.phoneCamera.setSmoothing(' + v + ')');
+      };
+      // Cycle 0 -> 1 -> 2 -> 3 -> 0; Lua auto-recenters on the change.
+      scope.cycleHold = function () {
+        var next = ((Number(scope.holdMode) || 0) + 1) % 4;
+        bngApi.engineLua('extensions.phoneCamera.setHoldMode(' + next + ')');
+      };
+      scope.applyMirror = function () {
+        bngApi.engineLua('extensions.phoneCamera.setMirror(' +
+          (scope.mirror ? 'true' : 'false') + ')');
       };
 
       poll();                              // immediate first read
