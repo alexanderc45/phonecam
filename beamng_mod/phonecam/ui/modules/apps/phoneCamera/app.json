@@ -1,8 +1,13 @@
 {
   "name": "Phone Camera",
   "author": "alexanderc45",
-  "description": "Live status and controls for the Phone Camera extension: connection state, datagram counters, filter/rate readouts, recenter, and tuning sliders.",
-  "css": { "width": "260px", "height": "360px", "top": "80px", "left": "80px" },
+  "version": "0.1",
+  "description": "Live status and controls for the Phone Camera extension: connection state, datagram counters, filter/rate readouts, recenter, calibration, and tuning sliders.",
+  "types": [
+    "ui.apps.categories.camera"
+  ],
+  "category": "Camera",
+  "css": { "width": "260px", "height": "400px", "top": "80px", "left": "80px", "position": "absolute" },
   "directive": "phoneCameraApp",
   "domElement": "<phone-camera-app></phone-camera-app>"
 }

@@ -24,7 +24,7 @@
 // (no template literals / arrow fns).
 // ============================================================
 angular.module('beamng.apps')
-.directive('phoneCameraApp', ['$interval', 'bngApi', function ($interval, bngApi) {
+.directive('phoneCameraApp', [function () {
 
   // Human-readable hold-mode names, indexed by mode 0..3.
   var HOLD_NAMES = ['Landscape', 'Portrait', 'Upside-down', 'Landscape-R'];
@@ -201,11 +201,16 @@ angular.module('beamng.apps')
 '</div>'
   ].join('\n');
 
+  // Shape matched to a verified stock app from the user's game version
+  // (ClutchThermalDebug): controller-style directive, restrict 'EA',
+  // scope: true. Template stays INLINE (stock apps use templateUrl with an
+  // absolute '/ui/...' path; inline avoids path resolution entirely).
   return {
-    restrict: 'E',
+    restrict: 'EA',
     replace: true,
+    scope: true,
     template: TEMPLATE,
-    link: function (scope, element, attrs) {
+    controller: ['$log', '$scope', '$interval', 'bngApi', function ($log, $scope, $interval, bngApi) {
 
       // Lua expression: nil-safe so a not-yet-loaded extension yields null.
       var STATUS_EXPR =
@@ -214,10 +219,10 @@ angular.module('beamng.apps')
 
       var destroyed = false;
 
-      scope.s = null;               // latest raw status snapshot from Lua
-      scope.conn = { label: 'CONNECTING...', cls: 'grey' };
-      scope.ctrlReady = false;      // slider models seeded from first poll?
-      scope.ctrl = {                // input models (app owns these after seed)
+      $scope.s = null;               // latest raw status snapshot from Lua
+      $scope.conn = { label: 'CONNECTING...', cls: 'grey' };
+      $scope.ctrlReady = false;      // slider models seeded from first poll?
+      $scope.ctrl = {                // input models (app owns these after seed)
         enabled: true,
         positionEnabled: true,
         positionScale: 1.0,
@@ -226,9 +231,9 @@ angular.module('beamng.apps')
 
       // Hold/Mirror mirror Lua state EVERY poll (unlike the sliders): a mode
       // change auto-recenters in Lua, so the UI must always reflect the truth.
-      scope.holdMode = 1;
-      scope.holdName = HOLD_NAMES[1];
-      scope.mirror = false;
+      $scope.holdMode = 1;
+      $scope.holdName = HOLD_NAMES[1];
+      $scope.mirror = false;
 
       // Calibration wizard: button label + hint follow Lua's calibStep.
       var CALIB_LABELS = [
@@ -243,8 +248,8 @@ angular.module('beamng.apps')
         'Return the phone to your neutral filming pose, then press again.',
         'Hold the phone turned LEFT ~45 deg, then press to finish.'
       ];
-      scope.calibLabel = CALIB_LABELS[0];
-      scope.calibHint = '';
+      $scope.calibLabel = CALIB_LABELS[0];
+      $scope.calibHint = '';
 
       function computeConn(d) {
         if (!d) { return { label: 'EXTENSION NOT LOADED', cls: 'grey' }; }
@@ -261,82 +266,82 @@ angular.module('beamng.apps')
 
       function applyData(d) {
         if (destroyed) { return; }
-        scope.s = d || null;
-        scope.conn = computeConn(d);
+        $scope.s = d || null;
+        $scope.conn = computeConn(d);
         // Seed the slider inputs once from real Lua state, then let the app
         // own them (so polling never fights a slider mid-drag).
-        if (d && !scope.ctrlReady) {
-          scope.ctrl.enabled = !!d.enabled;
-          scope.ctrl.positionEnabled = !!d.positionEnabled;
-          scope.ctrl.positionScale = d.positionScale;
-          scope.ctrl.smoothingTau = d.smoothingTau;
-          scope.ctrlReady = true;
+        if (d && !$scope.ctrlReady) {
+          $scope.ctrl.enabled = !!d.enabled;
+          $scope.ctrl.positionEnabled = !!d.positionEnabled;
+          $scope.ctrl.positionScale = d.positionScale;
+          $scope.ctrl.smoothingTau = d.smoothingTau;
+          $scope.ctrlReady = true;
         }
         // Hold/Mirror track Lua state on every poll.
         if (d && typeof d.holdMode === 'number') {
-          scope.holdMode = d.holdMode;
-          scope.holdName = HOLD_NAMES[d.holdMode] || ('mode ' + d.holdMode);
+          $scope.holdMode = d.holdMode;
+          $scope.holdName = HOLD_NAMES[d.holdMode] || ('mode ' + d.holdMode);
         }
-        if (d) { scope.mirror = !!d.mirrorRotation; }
+        if (d) { $scope.mirror = !!d.mirrorRotation; }
         if (d && typeof d.calibStep === 'number') {
           var st = Math.max(0, Math.min(3, d.calibStep));
-          scope.calibLabel = st === 0 && d.calibrated
+          $scope.calibLabel = st === 0 && d.calibrated
             ? 'RE-CALIBRATE AXES (set)'
             : CALIB_LABELS[st];
-          scope.calibHint = CALIB_HINTS[st];
+          $scope.calibHint = CALIB_HINTS[st];
         }
       }
 
       function poll() {
         bngApi.engineLua(STATUS_EXPR, function (data) {
           // Callback fires outside Angular's digest — schedule the update.
-          scope.$evalAsync(function () { applyData(data); });
+          $scope.$evalAsync(function () { applyData(data); });
         });
       }
 
       // ---- controls (fire-and-forget engineLua) ----
-      scope.calibrate = function () {
+      $scope.calibrate = function () {
         bngApi.engineLua('extensions.phoneCamera.calibrate()');
         poll();  // refresh the step label promptly
       };
-      scope.recenter = function () {
+      $scope.recenter = function () {
         bngApi.engineLua('extensions.phoneCamera.recenter()');
       };
-      scope.applyEnabled = function () {
+      $scope.applyEnabled = function () {
         bngApi.engineLua('extensions.phoneCamera.setEnabled(' +
-          (scope.ctrl.enabled ? 'true' : 'false') + ')');
+          ($scope.ctrl.enabled ? 'true' : 'false') + ')');
       };
-      scope.applyPosition = function () {
+      $scope.applyPosition = function () {
         bngApi.engineLua('extensions.phoneCamera.setPositionEnabled(' +
-          (scope.ctrl.positionEnabled ? 'true' : 'false') + ')');
+          ($scope.ctrl.positionEnabled ? 'true' : 'false') + ')');
       };
-      scope.applyScale = function () {
-        var v = Number(scope.ctrl.positionScale);
+      $scope.applyScale = function () {
+        var v = Number($scope.ctrl.positionScale);
         if (!isFinite(v)) { return; }
         bngApi.engineLua('extensions.phoneCamera.setPositionScale(' + v + ')');
       };
-      scope.applySmoothing = function () {
-        var v = Number(scope.ctrl.smoothingTau);
+      $scope.applySmoothing = function () {
+        var v = Number($scope.ctrl.smoothingTau);
         if (!isFinite(v)) { return; }
         bngApi.engineLua('extensions.phoneCamera.setSmoothing(' + v + ')');
       };
       // Cycle 0 -> 1 -> 2 -> 3 -> 0; Lua auto-recenters on the change.
-      scope.cycleHold = function () {
-        var next = ((Number(scope.holdMode) || 0) + 1) % 4;
+      $scope.cycleHold = function () {
+        var next = ((Number($scope.holdMode) || 0) + 1) % 4;
         bngApi.engineLua('extensions.phoneCamera.setHoldMode(' + next + ')');
       };
-      scope.applyMirror = function () {
+      $scope.applyMirror = function () {
         bngApi.engineLua('extensions.phoneCamera.setMirror(' +
-          (scope.mirror ? 'true' : 'false') + ')');
+          ($scope.mirror ? 'true' : 'false') + ')');
       };
 
       poll();                              // immediate first read
       var poller = $interval(poll, 250);   // ~4 Hz
 
-      scope.$on('$destroy', function () {
+      $scope.$on('$destroy', function () {
         destroyed = true;
         if (poller) { $interval.cancel(poller); poller = null; }
       });
-    }
+    }]
   };
 }]);
