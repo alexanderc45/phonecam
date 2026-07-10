@@ -44,13 +44,17 @@ function C:init()
 end
 
 function C:update(data)
+  -- Heartbeat for debug(): proves core_camera discovered us and calls
+  -- update each frame (counted before any early-return).
+  local pc = extensions.phoneCamera
+  if pc and pc._filterTick then pc._filterTick('tick') end
+
   -- Yield to real VR head-tracking (same guard trackir.lua uses).
   if data.openxrSessionRunning then return true end
   -- The legacy free-cam path in phoneCamera.lua owns the free camera via
   -- setCameraPosRot; skip it here so we never double-apply.
   if commands.isFreeCamera() then return true end
 
-  local pc = extensions.phoneCamera
   if not pc or not pc.isEnabled() then return true end
 
   -- Snapshot the active mode's rotation BEFORE we touch it, so the
@@ -72,6 +76,7 @@ function C:update(data)
     local r = baseRot * delta                 -- POST-multiply: camera-local
     if not isnaninf(r:squaredNorm()) then
       data.res.rot = r
+      if pc._filterTick then pc._filterTick('applied') end
     end
   end
 

@@ -84,6 +84,8 @@ local stats = { json = 0, osc = 0, oscRot = 0, oscPos = 0, oscOther = 0, other =
 -- Rotation-parse failure forensics: why each rotation datagram was
 -- rejected, plus a raw sample of the last failure for offline analysis.
 local rotFails = { tags = 0, short = 0, nonfinite = 0, norm = 0 }
+-- Heartbeats from the phonelook camera filter (proves core_camera runs it)
+local filterStats = { tick = 0, applied = 0 }
 local lastRotRaw = nil        -- first 64 bytes of the last failing datagram
 local lastRotInfo = nil       -- human-readable decode of the last failure
 
@@ -245,7 +247,7 @@ local function handleOsc(data)
     local inv = 1 / math.sqrt(n2)
     phoneQuat = phoneToBeamNG({ x*inv, y*inv, z*inv, w*inv })
     stats.oscRot = stats.oscRot + 1
-    if stats.oscRot == 1 then print('phoneCamera: first OSC rotation received — phone is live') end
+    if stats.oscRot == 1 then print('phoneCamera: first OSC rotation received - phone is live') end
     onFirstSample()
   else -- isPos
     if tags ~= 'fff' then return end
@@ -311,6 +313,11 @@ end
 
 -- ---- Public accessors used by the phonelook filter -------------------
 M.isEnabled = function() return enabled end
+
+-- Heartbeat sink for the phonelook filter (debug instrumentation).
+M._filterTick = function(kind)
+  filterStats[kind] = (filterStats[kind] or 0) + 1
+end
 
 -- Smoothed camera-local head-look delta (refQuat^-1 * phoneQuat),
 -- nlerp-smoothed framerate-independently. Returns nil when disabled or
@@ -429,6 +436,9 @@ M.debug = function()
   print(string.format('  camera: isFreeCamera=%s', tostring(commands.isFreeCamera())))
   print(string.format('  rotFails: tags=%d short=%d nonfinite=%d norm=%d',
     rotFails.tags, rotFails.short, rotFails.nonfinite, rotFails.norm))
+  print(string.format('  filter: tick=%d applied=%d  phonelookFile=%s',
+    filterStats.tick, filterStats.applied,
+    tostring(FS:fileExists('/lua/ge/extensions/core/cameraModes/phonelook.lua'))))
   if lastRotInfo then print('  lastRotFail: ' .. lastRotInfo) end
   if lastRotRaw then
     local hex = {}
