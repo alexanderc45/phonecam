@@ -2,44 +2,166 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
 <title>BeamNG Phone Camera</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2129;
+    --border: #2d333c; --text: #e6edf3; --dim: #8b949e;
+    --green: #3fb950; --red: #f85149; --amber: #d29922; --blue: #4493f8;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
   body {
-    font-family: system-ui, sans-serif;
-    background: #14171c; color: #e8eaed;
-    margin: 0; padding: 24px;
-    display: flex; flex-direction: column; gap: 16px; align-items: center;
-    text-align: center;
+    margin: 0; padding: max(12px, env(safe-area-inset-top)) 16px 24px;
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
   }
-  h1 { font-size: 1.3rem; margin: 8px 0 0; }
+  .wrap { width: 100%; max-width: 430px; display: flex; flex-direction: column; gap: 14px; }
+
+  /* header */
+  header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  h1 { font-size: 1.05rem; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  h1 small { color: var(--dim); font-weight: 400; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 999px; font-size: .8rem; font-weight: 600;
+    background: var(--panel); border: 1px solid var(--border); white-space: nowrap;
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .pill.ok  .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .pill.bad .dot { background: var(--red); }
+  .pill.wait .dot { background: var(--amber); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .3; } }
+
+  /* banners */
+  .banner {
+    display: none; padding: 12px 14px; border-radius: 12px; font-size: .85rem;
+    line-height: 1.45; border: 1px solid;
+  }
+  .banner.show { display: block; }
+  .banner.warn { background: #2d230b; border-color: #5c4a1a; color: #e3c56d; }
+  .banner.err  { background: #331b1d; border-color: #6e2a2e; color: #f0a8a8; }
+  .banner code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; font-size: .78rem; word-break: break-all; }
+
+  /* 3D viewport */
+  .viz {
+    background: radial-gradient(ellipse at 50% 40%, #1a2230 0%, var(--panel) 70%);
+    border: 1px solid var(--border); border-radius: 16px;
+    height: 190px; display: flex; align-items: center; justify-content: center;
+    perspective: 650px; overflow: hidden; position: relative;
+  }
+  .viz .hint {
+    position: absolute; bottom: 10px; left: 0; right: 0; text-align: center;
+    font-size: .72rem; color: var(--dim);
+  }
+  #phone3d {
+    width: 130px; height: 64px; border-radius: 10px;
+    background: linear-gradient(160deg, #3b4657, #232a35);
+    border: 1px solid #4a5568; position: relative;
+    transform-style: preserve-3d; will-change: transform;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  }
+  #phone3d .screen {
+    position: absolute; inset: 5px; border-radius: 6px;
+    background: linear-gradient(135deg, #0f2f4d, #123a2b);
+    display: flex; align-items: center; justify-content: center;
+    font-size: .6rem; color: #7dd3fc; letter-spacing: 1px;
+  }
+  #phone3d .lens {
+    position: absolute; top: 50%; left: -7px; width: 10px; height: 10px;
+    margin-top: -5px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #93c5fd, #1e3a5f 70%);
+    transform: translateZ(-3px);
+  }
+
+  /* stat cards */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 4px; text-align: center;
+  }
+  .stat .v { font-size: 1.05rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: .62rem; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-top: 3px; }
+
+  /* buttons */
   button {
-    font-size: 1.1rem; padding: 14px 28px; border-radius: 10px;
-    border: none; cursor: pointer; width: 100%; max-width: 340px;
+    width: 100%; padding: 16px; border: none; border-radius: 14px;
+    font-size: 1.05rem; font-weight: 650; cursor: pointer; color: #fff;
+    transition: transform .06s, filter .15s;
   }
-  #startBtn   { background: #2e7d32; color: #fff; }
-  #recenterBtn{ background: #1565c0; color: #fff; }
-  button:disabled { background: #444; color: #999; }
-  #status { font-size: 0.95rem; color: #9aa0a6; min-height: 1.2em; }
-  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  td { padding: 4px 12px; border-bottom: 1px solid #2a2e35; }
-  td:first-child { color: #9aa0a6; text-align: right; }
-  .ok  { color: #81c995; }
-  .bad { color: #f28b82; }
+  button:active { transform: scale(.98); }
+  button:disabled { filter: grayscale(.8) brightness(.6); }
+  #startBtn { background: linear-gradient(135deg, #238636, #2ea043); box-shadow: 0 4px 18px rgba(46,160,67,.25); }
+  #startBtn.streaming { background: linear-gradient(135deg, #8b1e1e, #b62324); box-shadow: 0 4px 18px rgba(182,35,36,.2); }
+  #recenterBtn { background: linear-gradient(135deg, #1f6feb, #388bfd); box-shadow: 0 4px 18px rgba(56,139,253,.22); }
+
+  /* checklist + help */
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+  .check { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: .88rem; }
+  .check .ic { width: 20px; text-align: center; }
+  .check.ok .ic { color: var(--green); }
+  .check.bad .ic { color: var(--red); }
+  .check.idle .ic { color: var(--dim); }
+  .check .sub { color: var(--dim); font-size: .75rem; display: block; }
+  details { border: 1px solid var(--border); border-radius: 14px; background: var(--panel); }
+  summary { padding: 13px 14px; font-size: .9rem; font-weight: 600; cursor: pointer; color: var(--dim); }
+  details[open] summary { color: var(--text); border-bottom: 1px solid var(--border); }
+  details .body { padding: 12px 14px; font-size: .82rem; color: var(--dim); line-height: 1.55; }
+  details .body b { color: var(--text); }
+  details .body code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; font-size: .74rem; word-break: break-all; }
+  footer { font-size: .7rem; color: var(--dim); text-align: center; }
 </style>
 </head>
 <body>
-<h1>📱 BeamNG Phone Camera</h1>
-<div id="status">Not connected</div>
-<button id="startBtn">Start streaming</button>
-<button id="recenterBtn" disabled>Recenter camera</button>
-<table>
-  <tr><td>alpha (yaw)</td>  <td id="vA">–</td></tr>
-  <tr><td>beta (pitch)</td> <td id="vB">–</td></tr>
-  <tr><td>gamma (roll)</td> <td id="vG">–</td></tr>
-  <tr><td>send rate</td>    <td id="vHz">–</td></tr>
-</table>
+<div class="wrap">
+  <header>
+    <h1>🎥 Phone Camera <small>for BeamNG</small></h1>
+    <span class="pill" id="pill"><span class="dot"></span><span id="pillText">Idle</span></span>
+  </header>
+
+  <div class="banner err"  id="bannerFile">This page was opened as a local file. It must be loaded from the relay server — run <b>PhoneCamRelay.exe</b> on your PC and open the address it prints (or scan its QR code).</div>
+  <div class="banner warn" id="bannerSecure"><b>Heads-up:</b> this page is on an insecure origin, so your browser will probably block motion sensors.<br>• <b>Android Chrome:</b> open <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>, add <code id="originTxt"></code>, relaunch.<br>• <b>iPhone:</b> run the server with HTTPS (see README).</div>
+  <div class="banner err"  id="bannerNoApi">This browser doesn't support the DeviceOrientation API. Try Chrome (Android) or Safari (iOS).</div>
+
+  <div class="viz">
+    <div id="phone3d"><div class="screen">BEAMNG CAM</div><div class="lens"></div></div>
+    <div class="hint" id="vizHint">the model mirrors your phone once sensors are live</div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="v" id="vPitch">–</div><div class="l">pitch</div></div>
+    <div class="stat"><div class="v" id="vYaw">–</div><div class="l">yaw</div></div>
+    <div class="stat"><div class="v" id="vRoll">–</div><div class="l">roll</div></div>
+    <div class="stat"><div class="v" id="vHz">–</div><div class="l">Hz</div></div>
+  </div>
+
+  <button id="startBtn">▶&nbsp; Start streaming</button>
+  <button id="recenterBtn" disabled>⟲&nbsp; Recenter camera</button>
+
+  <div class="panel" id="checks">
+    <div class="check idle" id="ckSensor"><span class="ic">◌</span><span>Motion sensors<span class="sub" id="ckSensorSub">tap Start to request access</span></span></div>
+    <div class="check idle" id="ckWs"><span class="ic">◌</span><span>Relay server<span class="sub" id="ckWsSub"></span></span></div>
+    <div class="check idle" id="ckGame"><span class="ic">◌</span><span>In-game<span class="sub">press Shift+C in BeamNG for free camera, then Recenter</span></span></div>
+  </div>
+
+  <details>
+    <summary>How to use / troubleshooting</summary>
+    <div class="body">
+      <b>1.</b> Keep this phone and the PC running <code>PhoneCamRelay.exe</code> on the same Wi-Fi.<br>
+      <b>2.</b> Tap <b>Start streaming</b> and allow motion access if asked.<br>
+      <b>3.</b> In BeamNG press <b>Shift+C</b> (free camera), hold the phone level in landscape like you're filming, and tap <b>Recenter</b>.<br><br>
+      <b>No sensor data?</b> Browsers block sensors on plain <code>http://</code> pages — see the yellow banner fix above.<br>
+      <b>Camera not moving in game?</b> Make sure the mod is installed (a <code>phoneCamera</code> line appears in the BeamNG console) and you're in free-camera mode.<br>
+      <b>Drifting?</b> Phone gyros drift over minutes — just tap Recenter again.
+    </div>
+  </details>
+
+  <footer id="foot"></footer>
+</div>
 
 <script>
 "use strict";
@@ -47,33 +169,20 @@
 /* ============================================================
  * BeamNG Phone Camera — web client
  *
- * Reads the phone's orientation sensors via the W3C
- * DeviceOrientation API and streams a ready-made quaternion
- * over a WebSocket to the local relay server, which forwards
- * it to BeamNG over UDP.
+ * Captures DeviceOrientation (intrinsic Z-X'-Y'' Euler angles in
+ * DEGREES: alpha yaw 0..360, beta pitch -180..180, gamma roll
+ * -90..90), converts them to a QUATERNION on the phone (Euler
+ * angles gimbal-flip near ±90°; the quaternion doesn't), and
+ * streams it over WebSocket -> relay -> UDP -> BeamNG Lua mod.
  *
- * ---- The math, in brief -------------------------------------
- * The DeviceOrientation event gives three Euler angles in
- * DEGREES, applied INTRINSICALLY in Z-X'-Y'' order:
- *
- *   alpha: rotation about the device Z axis (out of the screen), 0..360
- *   beta : rotation about the device X axis (right edge),     -180..180
- *   gamma: rotation about the device Y axis (top edge),        -90..90
- *
- * Euler angles suffer from gimbal ambiguity (gamma flips sign
- * near ±90°), so we convert them to a QUATERNION here, on the
- * phone, using the well-known three.js DeviceOrientationControls
- * formula, and send the quaternion. The Lua mod then only has to
- * do a coordinate-frame swap — no fragile Euler math in-game.
- *
- * Frames used below (three.js convention): X east, Y up, Z south.
- * BeamNG is Z-up; the Lua side converts (see phoneCamera.lua).
+ * Frames: quaternion is built in a three.js-style Y-up world
+ * frame (X east, Y up, Z south); the Lua mod converts to
+ * BeamNG's Z-up frame with a component swap (see phoneCamera.lua).
  * ============================================================ */
 
 const DEG2RAD = Math.PI / 180;
 
-// Hamilton product: result = a ⊗ b (apply b first, then a),
-// quaternions stored as [x, y, z, w].
+// Hamilton product: result = a ⊗ b (apply b first, then a), [x,y,z,w].
 function qMul(a, b) {
   return [
     a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
@@ -83,10 +192,9 @@ function qMul(a, b) {
   ];
 }
 
-// Euler (radians) -> quaternion, intrinsic Y-X'-Z'' order.
-// This is exactly three.js Quaternion.setFromEuler(order 'YXZ'),
-// which is the correct order once deviceorientation's Z-X'-Y''
-// angles are re-expressed in a Y-up world frame.
+// Euler (radians) -> quaternion, intrinsic Y-X'-Z'' order — exactly
+// three.js Quaternion.setFromEuler(order 'YXZ'), the correct order once
+// deviceorientation's Z-X'-Y'' angles are re-expressed in a Y-up frame.
 function qFromEulerYXZ(x, y, z) {
   const c1 = Math.cos(x / 2), c2 = Math.cos(y / 2), c3 = Math.cos(z / 2);
   const s1 = Math.sin(x / 2), s2 = Math.sin(y / 2), s3 = Math.sin(z / 2);
@@ -98,109 +206,195 @@ function qFromEulerYXZ(x, y, z) {
   ];
 }
 
-// Constant: -90° about X. The sensor frame has +Z coming OUT of the
-// screen (toward the user), but we want "camera" semantics where the
-// view direction is out of the BACK of the phone — like filming.
-// Rotating the frame -90° about X achieves that remap.
+// -90° about X: sensor +Z points OUT of the screen, but we want camera
+// semantics — view direction out of the BACK of the phone, like filming.
 const Q_CAMERA = [-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)];
 
-// Build the world-space orientation quaternion of the "phone camera".
-//   alpha/beta/gamma : degrees, from the deviceorientation event
-//   screenAngle      : degrees, current screen rotation (0/90/180/270);
-//                      the OS rotates the coordinate frame with the UI,
-//                      so we rotate it back to keep landscape/portrait
-//                      behaving identically.
+// alpha/beta/gamma in degrees + current screen rotation -> world quaternion.
 function deviceQuat(alpha, beta, gamma, screenAngle) {
-  // Degrees -> radians, re-ordered into the Y-up world frame:
-  // beta -> X, alpha -> Y, -gamma -> Z (sign flip because the axis
-  // orientation inverts when moving from device frame to world frame).
+  // Degrees -> radians, re-ordered into the Y-up frame (beta->X, alpha->Y,
+  // -gamma->Z; the sign flips with the axis when changing frames).
   let q = qFromEulerYXZ(beta * DEG2RAD, alpha * DEG2RAD, -gamma * DEG2RAD);
-  // Look out the back of the device instead of out of the screen.
   q = qMul(q, Q_CAMERA);
-  // Undo the UI screen rotation (rotation about the device Z axis).
+  // Undo the UI screen rotation (about the device Z axis) so portrait
+  // and landscape behave identically.
   const half = -screenAngle * DEG2RAD / 2;
   q = qMul(q, [0, 0, Math.sin(half), Math.cos(half)]);
   return q;
 }
 
-/* ---------------- networking ---------------- */
+// Quaternion -> CSS matrix3d for the 3D phone model. CSS axes are X right,
+// Y DOWN, Z toward the viewer, i.e. our frame conjugated by S=diag(1,-1,-1):
+// element (i,j) of the rotation matrix flips sign when exactly one of
+// row/column is a flipped axis.
+function qToCssMatrix(q) {
+  const [x, y, z, w] = q;
+  const r00 = 1 - 2*(y*y + z*z), r01 = 2*(x*y - z*w),     r02 = 2*(x*z + y*w);
+  const r10 = 2*(x*y + z*w),     r11 = 1 - 2*(x*x + z*z), r12 = 2*(y*z - x*w);
+  const r20 = 2*(x*z - y*w),     r21 = 2*(y*z + x*w),     r22 = 1 - 2*(x*x + y*y);
+  return `matrix3d(${r00},${-r10},${-r20},0,` +
+                  `${-r01},${r11},${r21},0,` +
+                  `${-r02},${r12},${r22},0, 0,0,0,1)`;
+}
 
+// Extract readable pitch/yaw/roll (degrees) from the camera quaternion,
+// for the stat cards only — the game receives the raw quaternion.
+function qToDisplayEuler(q) {
+  const [x, y, z, w] = q;
+  const fwdY = -(2*(y*z - x*w));            // forward vector height -> pitch
+  const pitch = Math.asin(Math.max(-1, Math.min(1, fwdY))) / DEG2RAD;
+  const yaw = Math.atan2(2*(x*z + y*w), 1 - 2*(x*x + y*y)) / DEG2RAD;
+  const upX = 2*(x*y + z*w);                // up vector lean -> roll
+  const roll = Math.asin(Math.max(-1, Math.min(1, upX))) / DEG2RAD;
+  return [pitch, yaw, roll];
+}
+
+/* ---------------- UI helpers ---------------- */
+const $ = id => document.getElementById(id);
+function setPill(cls, text) { $("pill").className = "pill " + cls; $("pillText").textContent = text; }
+function setCheck(id, state, sub) {
+  const el = $(id);
+  el.className = "check " + state;
+  el.querySelector(".ic").textContent = state === "ok" ? "✔" : state === "bad" ? "✖" : "◌";
+  if (sub !== undefined) { const s = el.querySelector(".sub"); if (s) s.textContent = sub; }
+}
+
+/* ---------------- networking ---------------- */
 const params  = new URLSearchParams(location.search);
 const wsPort  = params.get("ws") || "8081";
 const wsProto = location.protocol === "https:" ? "wss" : "ws";
 const wsUrl   = `${wsProto}://${location.hostname}:${wsPort}`;
+$("foot").textContent = `relay: ${location.host} · telemetry: ${wsUrl}`;
 
-const MAX_HZ = 60;               // don't flood the link; 60 Hz is plenty
-let ws = null, lastSend = 0, sendCount = 0;
+const MAX_HZ = 60;
+let ws = null, wantStream = false, retryTimer = null;
+let lastSend = 0, sendCount = 0, sensorSeen = false;
 
-const $ = id => document.getElementById(id);
-const setStatus = (msg, ok) => {
-  $("status").textContent = msg;
-  $("status").className = ok === undefined ? "" : (ok ? "ok" : "bad");
-};
+function connect() {
+  clearTimeout(retryTimer);
+  setPill("wait", "Connecting…");
+  setCheck("ckWs", "idle", wsUrl);
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => {
+    setPill("ok", "Streaming");
+    setCheck("ckWs", "ok", "connected to " + wsUrl);
+    setCheck("ckGame", "ok");
+    $("recenterBtn").disabled = false;
+  };
+  ws.onclose = () => {
+    $("recenterBtn").disabled = true;
+    if (wantStream) {   // auto-reconnect with a gentle 2s retry
+      setPill("bad", "Reconnecting…");
+      setCheck("ckWs", "bad", "connection lost — retrying…");
+      retryTimer = setTimeout(connect, 2000);
+    } else {
+      setPill("", "Idle");
+    }
+  };
+  ws.onerror = () => setCheck("ckWs", "bad", "can't reach " + wsUrl + " — is PhoneCamRelay running?");
+}
 
+/* ---------------- sensors ---------------- */
 function screenAngle() {
   return (screen.orientation && screen.orientation.angle) || window.orientation || 0;
 }
 
 function onOrientation(ev) {
-  if (ev.alpha === null || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (ev.alpha === null && ev.beta === null) return;
+  if (!sensorSeen) {
+    sensorSeen = true;
+    setCheck("ckSensor", "ok", "receiving orientation data");
+    $("vizHint").style.display = "none";
+  }
+  const q = deviceQuat(ev.alpha || 0, ev.beta || 0, ev.gamma || 0, screenAngle());
+
+  // Local feedback (runs even while disconnected).
+  $("phone3d").style.transform = qToCssMatrix(q);
+  const [p, y, r] = qToDisplayEuler(q);
+  $("vPitch").textContent = p.toFixed(0) + "°";
+  $("vYaw").textContent   = ((y + 360) % 360).toFixed(0) + "°";
+  $("vRoll").textContent  = r.toFixed(0) + "°";
+
+  // Stream (throttled to MAX_HZ).
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const now = performance.now();
-  if (now - lastSend < 1000 / MAX_HZ) return;   // throttle to MAX_HZ
+  if (now - lastSend < 1000 / MAX_HZ) return;
   lastSend = now;
   sendCount++;
-
-  const q = deviceQuat(ev.alpha, ev.beta, ev.gamma, screenAngle());
-  // Compact JSON: t = message type, q = quaternion [x,y,z,w] (Y-up frame),
-  // raw Euler angles included for on-screen/console debugging only.
   ws.send(JSON.stringify({
     t: "o",
     q: q.map(v => +v.toFixed(5)),
-    a: +ev.alpha.toFixed(1), b: +ev.beta.toFixed(1), g: +ev.gamma.toFixed(1),
+    a: +(ev.alpha || 0).toFixed(1), b: +(ev.beta || 0).toFixed(1), g: +(ev.gamma || 0).toFixed(1),
   }));
-
-  $("vA").textContent = ev.alpha.toFixed(1) + "°";
-  $("vB").textContent = ev.beta.toFixed(1) + "°";
-  $("vG").textContent = ev.gamma.toFixed(1) + "°";
 }
 
-setInterval(() => { $("vHz").textContent = sendCount + " Hz"; sendCount = 0; }, 1000);
+setInterval(() => { $("vHz").textContent = sendCount ? sendCount : "–"; sendCount = 0; }, 1000);
 
-function connect() {
-  setStatus("Connecting to " + wsUrl + " …");
-  ws = new WebSocket(wsUrl);
-  ws.onopen  = () => { setStatus("Streaming to " + wsUrl, true); $("recenterBtn").disabled = false; };
-  ws.onclose = () => { setStatus("Disconnected — tap Start to retry", false); $("recenterBtn").disabled = true; };
-  ws.onerror = () => setStatus("WebSocket error — is the relay server running?", false);
+/* ---------------- screen wake lock ---------------- */
+let wakeLock = null;
+async function keepAwake() {
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+  } catch (e) { /* unsupported or denied — not critical */ }
 }
+document.addEventListener("visibilitychange", () => {
+  if (wantStream && document.visibilityState === "visible") keepAwake();
+});
 
+/* ---------------- start / stop ---------------- */
 async function start() {
-  // iOS 13+ requires an explicit, user-gesture-triggered permission
-  // request before orientation events are delivered.
+  // iOS 13+ requires an explicit user-gesture permission request.
   if (typeof DeviceOrientationEvent !== "undefined" &&
       typeof DeviceOrientationEvent.requestPermission === "function") {
     try {
       const res = await DeviceOrientationEvent.requestPermission();
-      if (res !== "granted") { setStatus("Sensor permission denied", false); return; }
-    } catch (e) { setStatus("Sensor permission error: " + e.message, false); return; }
+      if (res !== "granted") { setCheck("ckSensor", "bad", "permission denied — reload and allow motion access"); return; }
+    } catch (e) { setCheck("ckSensor", "bad", "permission error: " + e.message); return; }
   }
+  wantStream = true;
   window.addEventListener("deviceorientation", onOrientation);
   connect();
+  keepAwake();
+  $("startBtn").textContent = "■  Stop streaming";
+  $("startBtn").classList.add("streaming");
 
-  // Warn if the sensor never fires (usually an insecure-origin block).
   setTimeout(() => {
-    if ($("vA").textContent === "–")
-      setStatus("No sensor data. On Android Chrome over http:// enable " +
-                "chrome://flags/#unsafely-treat-insecure-origin-as-secure " +
-                "for this address, or use the HTTPS setup from the README.", false);
+    if (!sensorSeen)
+      setCheck("ckSensor", "bad", "no data — sensors are blocked on this origin (see banner / help below)");
   }, 3000);
 }
 
-$("startBtn").onclick = start;
+function stop() {
+  wantStream = false;
+  clearTimeout(retryTimer);
+  if (ws) ws.close();
+  window.removeEventListener("deviceorientation", onOrientation);
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  $("startBtn").textContent = "▶  Start streaming";
+  $("startBtn").classList.remove("streaming");
+  setPill("", "Idle");
+  setCheck("ckSensor", "idle", "tap Start to request access");
+  setCheck("ckWs", "idle", "");
+  sensorSeen = false;
+}
+
+$("startBtn").onclick = () => wantStream ? stop() : start();
 $("recenterBtn").onclick = () => {
   // Tell the mod: "current phone pose = current in-game camera pose".
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "recenter" }));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ t: "recenter" }));
+    navigator.vibrate && navigator.vibrate(40);
+  }
 };
+
+/* ---------------- environment diagnostics (run immediately) ---------------- */
+if (location.protocol === "file:") $("bannerFile").classList.add("show");
+if (typeof DeviceOrientationEvent === "undefined") $("bannerNoApi").classList.add("show");
+if (!window.isSecureContext && location.protocol !== "file:" &&
+    !["localhost", "127.0.0.1"].includes(location.hostname)) {
+  $("originTxt").textContent = location.origin;
+  $("bannerSecure").classList.add("show");
+}
 </script>
 </body>
 </html>
