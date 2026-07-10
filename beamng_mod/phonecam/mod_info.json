@@ -2,7 +2,7 @@
   "name": "Phone Camera Control",
   "version": "1.0.0",
   "author": "alexanderc45",
-  "description": "Drives the BeamNG free camera with real-world smartphone orientation (DeviceOrientation API -> WebSocket relay -> UDP -> Lua). Intended for handheld-style video recording.",
-  "tagline": "Use your phone as a virtual camera crane for cinematic recordings",
+  "description": "Adds VR-style head-look to ANY BeamNG camera mode (orbit, hood, cab, chase, free) using a real phone's pose, plus optional 6DOF position. Accepts phone orientation over UDP from the bundled web client (DeviceOrientation -> relay) or from the free LOTA iOS app streaming ARKit pose as OSC. Intended for handheld-style video recording.",
+  "tagline": "Use your phone as a virtual camera for cinematic in-game recordings",
   "type": "utility"
 }
