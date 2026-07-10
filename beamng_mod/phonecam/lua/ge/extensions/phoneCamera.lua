@@ -89,6 +89,16 @@ local filterStats = { tick = 0, applied = 0 }
 local lastRotRaw = nil        -- first 64 bytes of the last failing datagram
 local lastRotInfo = nil       -- human-readable decode of the last failure
 
+-- Real-time seconds accumulated from onUpdate's dtReal. Used only as the
+-- clock for the UI app's live-rate math, so we never touch a wall-clock
+-- API (dtReal is the engine's real frame delta and always available here).
+local frameClock = 0
+-- Previous counter snapshot for M.getUiStatus() rate computation. Holds the
+-- last sample time, the counters at that time, and the last rates we
+-- reported (reused when two polls land in the same frame so rates don't
+-- flicker to zero).
+local uiRatePrev = nil
+
 -- Convert the phone's Y-up quaternion into BeamNG's Z-up frame.
 -- (x, y, z, w) -> (x, -z, y, w). Reused by both the JSON and OSC paths.
 local function phoneToBeamNG(q)
@@ -366,6 +376,7 @@ local function onExtensionUnloaded()
 end
 
 local function onUpdate(dtReal)
+  frameClock = frameClock + (dtReal or 0)   -- real-time base for UI rates
   drainSocket(udp)
   drainSocket(udpOsc)
 
@@ -457,6 +468,97 @@ M.debug = function()
     for i = 1, #lastRotRaw do hex[i] = string.format('%02x', lastRotRaw:byte(i)) end
     print('  lastRotRaw: ' .. table.concat(hex))
   end
+end
+
+-- Single flat snapshot for the in-game UI app (ui/modules/apps/phoneCamera).
+-- Mirrors debug() but returns ONE table (encodeJson'd by the bngApi bridge
+-- into a JS object) and adds live per-second rates. Called ~4 Hz by the app.
+-- Everything here is nil-safe so the app can poll before/while the phone is
+-- connected; nil fields simply drop out of the JSON.
+M.getUiStatus = function()
+  local now = frameClock
+
+  -- Live rates: delta(counter) / delta(time) since the previous poll. Every
+  -- successful orientation datagram bumps either stats.json (web client; a
+  -- json datagram is an orientation sample or the rare recenter) or
+  -- stats.oscRot (LOTA), so their sum is the rotation-sample counter.
+  local rotTotal = stats.json + stats.oscRot
+  local rotRate, appliedRate, tickRate = 0, 0, 0
+  if uiRatePrev then
+    local dt = now - uiRatePrev.t
+    if dt > 1e-3 then
+      rotRate     = (rotTotal - uiRatePrev.rot) / dt
+      appliedRate = (filterStats.applied - uiRatePrev.applied) / dt
+      tickRate    = (filterStats.tick - uiRatePrev.tick) / dt
+    else
+      -- Two polls inside one frame: reuse last rates instead of dividing by ~0.
+      rotRate     = uiRatePrev.rotRate or 0
+      appliedRate = uiRatePrev.appliedRate or 0
+      tickRate    = uiRatePrev.tickRate or 0
+    end
+  end
+  uiRatePrev = {
+    t = now, rot = rotTotal, applied = filterStats.applied, tick = filterStats.tick,
+    rotRate = rotRate, appliedRate = appliedRate, tickRate = tickRate,
+  }
+
+  -- Delta since recenter (angle in degrees), matching debug()'s math.
+  local deltaAngle = nil
+  if refQuat and phoneQuat then
+    local d = refQuat:inversed() * phoneQuat
+    deltaAngle = 2 * math.acos(math.min(1, math.abs(d.w))) * 180 / math.pi
+  end
+
+  -- Position delta xyz since recenter (meters, pre-scale), nil-safe.
+  local posDelta = nil
+  if phonePos and refPos then
+    local pd = phonePos - refPos
+    posDelta = { x = pd.x, y = pd.y, z = pd.z }
+  end
+
+  return {
+    enabled = enabled,
+    positionEnabled = positionEnabled,
+    positionScale = positionScale,
+    smoothingTau = smoothingTau,
+
+    jsonHost = listenHost, jsonPort = listenPort, jsonOpen = udp ~= nil,
+    oscHost = oscHost,     oscPort = oscPort,      oscOpen = udpOsc ~= nil,
+
+    -- Per-kind datagram totals.
+    dgJson = stats.json,
+    dgOsc = stats.osc,
+    dgOscRot = stats.oscRot,
+    dgOscPos = stats.oscPos,
+    dgOscOther = stats.oscOther,
+    dgUnknown = stats.other,
+
+    -- Rotation-parse failure forensics.
+    rotFailsTags = rotFails.tags,
+    rotFailsShort = rotFails.short,
+    rotFailsNonfinite = rotFails.nonfinite,
+    rotFailsNorm = rotFails.norm,
+    rotFailsTotal = rotFails.tags + rotFails.short + rotFails.nonfinite + rotFails.norm,
+
+    -- Camera filter heartbeats.
+    filterTick = filterStats.tick,
+    filterApplied = filterStats.applied,
+
+    -- Pose availability.
+    hasPhoneQuat = phoneQuat ~= nil,
+    hasPhonePos = phonePos ~= nil,
+    hasRef = refQuat ~= nil,
+    pendingRecenter = pendingRecenter,
+    isFreeCamera = commands.isFreeCamera(),
+
+    -- Live rates (per second).
+    rotRate = rotRate,
+    filterAppliedRate = appliedRate,
+    filterTickRate = tickRate,
+
+    deltaAngle = deltaAngle,   -- nil until first recenter + sample
+    posDelta = posDelta,       -- nil unless both phonePos and refPos exist
+  }
 end
 
 M.setEnabled = function(v)
