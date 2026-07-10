@@ -170,6 +170,23 @@ local frameClock = 0
 -- flicker to zero).
 local uiRatePrev = nil
 
+-- Rotate vector v = {x,y,z} by unit quaternion q = {x,y,z,w}: v' = q v q^-1.
+-- Plain-table math (no engine types) so it composes with the raw ARKit data.
+-- MUST be defined before correctRaw/computeGripCorrection/rawPosDeltaCamLocal,
+-- which capture it as an upvalue (a later declaration would silently resolve
+-- to a nil global inside them -> fatal on the first recenter).
+local function qRotateVec(q, vx, vy, vz)
+  local qx, qy, qz, qw = q[1], q[2], q[3], q[4]
+  -- t = 2 * cross(q.xyz, v)
+  local tx = 2 * (qy*vz - qz*vy)
+  local ty = 2 * (qz*vx - qx*vz)
+  local tz = 2 * (qx*vy - qy*vx)
+  -- v' = v + w*t + cross(q.xyz, t)
+  return vx + qw*tx + (qy*tz - qz*ty),
+         vy + qw*ty + (qz*tx - qx*tz),
+         vz + qw*tz + (qx*ty - qy*tx)
+end
+
 -- Convert the phone's Y-up quaternion into BeamNG's Z-up frame.
 -- (x, y, z, w) -> (x, -z, y, w). Reused by both the JSON and OSC paths.
 local function phoneToBeamNG(q)
@@ -265,19 +282,8 @@ local function computeGripCorrection(refRaw)
   return quatFromColumns({ rx, ry, rz }, { ux, uy, uz }, { wx, wy, wz })
 end
 
--- Rotate vector v = {x,y,z} by unit quaternion q = {x,y,z,w}: v' = q v q^-1.
--- Plain-table math (no engine types) so it composes with the raw ARKit data.
-local function qRotateVec(q, vx, vy, vz)
-  local qx, qy, qz, qw = q[1], q[2], q[3], q[4]
-  -- t = 2 * cross(q.xyz, v)
-  local tx = 2 * (qy*vz - qz*vy)
-  local ty = 2 * (qz*vx - qx*vz)
-  local tz = 2 * (qx*vy - qy*vx)
-  -- v' = v + w*t + cross(q.xyz, t)
-  return vx + qw*tx + (qy*tz - qz*ty),
-         vy + qw*ty + (qz*tx - qx*tz),
-         vz + qw*tz + (qx*ty - qy*tx)
-end
+-- (qRotateVec is defined above phoneToBeamNG — it must precede every
+-- function that captures it as an upvalue.)
 
 -- Normalized linear interpolation between quaternions. Good enough for
 -- frame-to-frame smoothing (angles are tiny); the sign flip picks the
