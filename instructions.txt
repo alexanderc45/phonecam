@@ -1,0 +1,7 @@
+I need to create a BeamNG.drive mod that translates real-world smartphone movement into in-game camera movement for video recording. To avoid developing a native mobile application, please design a stack using a lightweight local web server and HTML5.
+Please generate the following components:
+	1.	The Web Client (HTML/JS): A simple web page that accesses the phone's DeviceOrientation API to capture pitch, yaw, and roll data, and streams it over WebSockets.
+	2.	The Relay Server (Python or Node.js): A local server that hosts the web client for the phone to connect to, receives the WebSocket telemetry, and broadcasts it over a local UDP socket to BeamNG.
+	3.	The BeamNG.drive Mod (Lua): A Lua script utilizing BeamNG's built-in luasocket to listen for the incoming UDP telemetry data and apply the rotation directly to the in-game free camera's rotation matrix on every frame. Include the necessary mod_info.json.
+Please output the complete directory structure, all code files with comments explaining the math conversions (e.g., degrees/radians to BeamNG's quaternion/Euler systems), and step-by-step instructions for installing and running the mod.
+After generating and saving all the files locally on my laptop, please initialize a local Git repository, stage all files, commit them with a descriptive message, and push them to my remote GitHub repository so I can quickly pull and test them on my gaming computer. If a remote repository isn't linked yet, please pause and ask me for the GitHub repo URL before pushing.

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>BeamNG Phone Camera</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: system-ui, sans-serif;
+    background: #14171c; color: #e8eaed;
+    margin: 0; padding: 24px;
+    display: flex; flex-direction: column; gap: 16px; align-items: center;
+    text-align: center;
+  }
+  h1 { font-size: 1.3rem; margin: 8px 0 0; }
+  button {
+    font-size: 1.1rem; padding: 14px 28px; border-radius: 10px;
+    border: none; cursor: pointer; width: 100%; max-width: 340px;
+  }
+  #startBtn   { background: #2e7d32; color: #fff; }
+  #recenterBtn{ background: #1565c0; color: #fff; }
+  button:disabled { background: #444; color: #999; }
+  #status { font-size: 0.95rem; color: #9aa0a6; min-height: 1.2em; }
+  table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 4px 12px; border-bottom: 1px solid #2a2e35; }
+  td:first-child { color: #9aa0a6; text-align: right; }
+  .ok  { color: #81c995; }
+  .bad { color: #f28b82; }
+</style>
+</head>
+<body>
+<h1>📱 BeamNG Phone Camera</h1>
+<div id="status">Not connected</div>
+<button id="startBtn">Start streaming</button>
+<button id="recenterBtn" disabled>Recenter camera</button>
+<table>
+  <tr><td>alpha (yaw)</td>  <td id="vA">–</td></tr>
+  <tr><td>beta (pitch)</td> <td id="vB">–</td></tr>
+  <tr><td>gamma (roll)</td> <td id="vG">–</td></tr>
+  <tr><td>send rate</td>    <td id="vHz">–</td></tr>
+</table>
+
+<script>
+"use strict";
+
+/* ============================================================
+ * BeamNG Phone Camera — web client
+ *
+ * Reads the phone's orientation sensors via the W3C
+ * DeviceOrientation API and streams a ready-made quaternion
+ * over a WebSocket to the local relay server, which forwards
+ * it to BeamNG over UDP.
+ *
+ * ---- The math, in brief -------------------------------------
+ * The DeviceOrientation event gives three Euler angles in
+ * DEGREES, applied INTRINSICALLY in Z-X'-Y'' order:
+ *
+ *   alpha: rotation about the device Z axis (out of the screen), 0..360
+ *   beta : rotation about the device X axis (right edge),     -180..180
+ *   gamma: rotation about the device Y axis (top edge),        -90..90
+ *
+ * Euler angles suffer from gimbal ambiguity (gamma flips sign
+ * near ±90°), so we convert them to a QUATERNION here, on the
+ * phone, using the well-known three.js DeviceOrientationControls
+ * formula, and send the quaternion. The Lua mod then only has to
+ * do a coordinate-frame swap — no fragile Euler math in-game.
+ *
+ * Frames used below (three.js convention): X east, Y up, Z south.
+ * BeamNG is Z-up; the Lua side converts (see phoneCamera.lua).
+ * ============================================================ */
+
+const DEG2RAD = Math.PI / 180;
+
+// Hamilton product: result = a ⊗ b (apply b first, then a),
+// quaternions stored as [x, y, z, w].
+function qMul(a, b) {
+  return [
+    a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+    a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+    a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+    a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2],
+  ];
+}
+
+// Euler (radians) -> quaternion, intrinsic Y-X'-Z'' order.
+// This is exactly three.js Quaternion.setFromEuler(order 'YXZ'),
+// which is the correct order once deviceorientation's Z-X'-Y''
+// angles are re-expressed in a Y-up world frame.
+function qFromEulerYXZ(x, y, z) {
+  const c1 = Math.cos(x / 2), c2 = Math.cos(y / 2), c3 = Math.cos(z / 2);
+  const s1 = Math.sin(x / 2), s2 = Math.sin(y / 2), s3 = Math.sin(z / 2);
+  return [
+    s1*c2*c3 + c1*s2*s3,
+    c1*s2*c3 - s1*c2*s3,
+    c1*c2*s3 - s1*s2*c3,
+    c1*c2*c3 + s1*s2*s3,
+  ];
+}
+
+// Constant: -90° about X. The sensor frame has +Z coming OUT of the
+// screen (toward the user), but we want "camera" semantics where the
+// view direction is out of the BACK of the phone — like filming.
+// Rotating the frame -90° about X achieves that remap.
+const Q_CAMERA = [-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)];
+
+// Build the world-space orientation quaternion of the "phone camera".
+//   alpha/beta/gamma : degrees, from the deviceorientation event
+//   screenAngle      : degrees, current screen rotation (0/90/180/270);
+//                      the OS rotates the coordinate frame with the UI,
+//                      so we rotate it back to keep landscape/portrait
+//                      behaving identically.
+function deviceQuat(alpha, beta, gamma, screenAngle) {
+  // Degrees -> radians, re-ordered into the Y-up world frame:
+  // beta -> X, alpha -> Y, -gamma -> Z (sign flip because the axis
+  // orientation inverts when moving from device frame to world frame).
+  let q = qFromEulerYXZ(beta * DEG2RAD, alpha * DEG2RAD, -gamma * DEG2RAD);
+  // Look out the back of the device instead of out of the screen.
+  q = qMul(q, Q_CAMERA);
+  // Undo the UI screen rotation (rotation about the device Z axis).
+  const half = -screenAngle * DEG2RAD / 2;
+  q = qMul(q, [0, 0, Math.sin(half), Math.cos(half)]);
+  return q;
+}
+
+/* ---------------- networking ---------------- */
+
+const params  = new URLSearchParams(location.search);
+const wsPort  = params.get("ws") || "8081";
+const wsProto = location.protocol === "https:" ? "wss" : "ws";
+const wsUrl   = `${wsProto}://${location.hostname}:${wsPort}`;
+
+const MAX_HZ = 60;               // don't flood the link; 60 Hz is plenty
+let ws = null, lastSend = 0, sendCount = 0;
+
+const $ = id => document.getElementById(id);
+const setStatus = (msg, ok) => {
+  $("status").textContent = msg;
+  $("status").className = ok === undefined ? "" : (ok ? "ok" : "bad");
+};
+
+function screenAngle() {
+  return (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+}
+
+function onOrientation(ev) {
+  if (ev.alpha === null || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const now = performance.now();
+  if (now - lastSend < 1000 / MAX_HZ) return;   // throttle to MAX_HZ
+  lastSend = now;
+  sendCount++;
+
+  const q = deviceQuat(ev.alpha, ev.beta, ev.gamma, screenAngle());
+  // Compact JSON: t = message type, q = quaternion [x,y,z,w] (Y-up frame),
+  // raw Euler angles included for on-screen/console debugging only.
+  ws.send(JSON.stringify({
+    t: "o",
+    q: q.map(v => +v.toFixed(5)),
+    a: +ev.alpha.toFixed(1), b: +ev.beta.toFixed(1), g: +ev.gamma.toFixed(1),
+  }));
+
+  $("vA").textContent = ev.alpha.toFixed(1) + "°";
+  $("vB").textContent = ev.beta.toFixed(1) + "°";
+  $("vG").textContent = ev.gamma.toFixed(1) + "°";
+}
+
+setInterval(() => { $("vHz").textContent = sendCount + " Hz"; sendCount = 0; }, 1000);
+
+function connect() {
+  setStatus("Connecting to " + wsUrl + " …");
+  ws = new WebSocket(wsUrl);
+  ws.onopen  = () => { setStatus("Streaming to " + wsUrl, true); $("recenterBtn").disabled = false; };
+  ws.onclose = () => { setStatus("Disconnected — tap Start to retry", false); $("recenterBtn").disabled = true; };
+  ws.onerror = () => setStatus("WebSocket error — is the relay server running?", false);
+}
+
+async function start() {
+  // iOS 13+ requires an explicit, user-gesture-triggered permission
+  // request before orientation events are delivered.
+  if (typeof DeviceOrientationEvent !== "undefined" &&
+      typeof DeviceOrientationEvent.requestPermission === "function") {
+    try {
+      const res = await DeviceOrientationEvent.requestPermission();
+      if (res !== "granted") { setStatus("Sensor permission denied", false); return; }
+    } catch (e) { setStatus("Sensor permission error: " + e.message, false); return; }
+  }
+  window.addEventListener("deviceorientation", onOrientation);
+  connect();
+
+  // Warn if the sensor never fires (usually an insecure-origin block).
+  setTimeout(() => {
+    if ($("vA").textContent === "–")
+      setStatus("No sensor data. On Android Chrome over http:// enable " +
+                "chrome://flags/#unsafely-treat-insecure-origin-as-secure " +
+                "for this address, or use the HTTPS setup from the README.", false);
+  }, 3000);
+}
+
+$("startBtn").onclick = start;
+$("recenterBtn").onclick = () => {
+  // Tell the mod: "current phone pose = current in-game camera pose".
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "recenter" }));
+};
+</script>
+</body>
+</html>
