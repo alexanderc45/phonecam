@@ -115,6 +115,22 @@ local filterStats = { tick = 0, applied = 0 }
 local lastRotRaw = nil        -- first 64 bytes of the last failing datagram
 local lastRotInfo = nil       -- human-readable decode of the last failure
 
+-- ---- Axis auto-calibration --------------------------------------------
+-- Hold-mode presets proved insufficient in the field (the needed correction
+-- was not a screen-plane rotation). Instead, MEASURE the user's real axes:
+--   step 1: capture neutral pose        step 2: capture "pitch up ~45deg"
+--   step 3: re-capture neutral          step 4: capture "turn left ~45deg"
+-- The pitch gesture's rotation axis (device frame) is the user's pitch axis
+-- p; the yaw gesture gives u; w = p x u completes a right-handed frame. A
+-- post-multiplied constant quat P conjugates every delta by rot(P)^T, and
+-- the required target axes reduce to the standard basis under our
+-- Y-up->Z-up swap (X->camPitch, Y->camYaw, Z->-camRoll pre-swap), so P is
+-- simply the quaternion of the matrix whose COLUMNS are p, u, w.
+local lastRawQuat = nil       -- latest raw ARKit quat {x,y,z,w}, pre-correction
+local holdQuat = nil          -- calibrated correction {x,y,z,w}; overrides holdMode
+local calibStep = 0           -- 0 idle; 1..3 = wizard progress
+local calibA, calibP = nil, nil  -- captured neutral quat / pitch axis
+
 -- Real-time seconds accumulated from onUpdate's dtReal. Used only as the
 -- clock for the UI app's live-rate math, so we never touch a wall-clock
 -- API (dtReal is the engine's real frame delta and always available here).
@@ -282,22 +298,35 @@ local function handleOsc(data)
     end
     local inv = 1 / math.sqrt(n2)
     local qx, qy, qz, qw = x*inv, y*inv, z*inv, w*inv
+    lastRawQuat = { qx, qy, qz, qw }   -- pure raw sample, feeds calibration
 
     -- Device-local corrections BEFORE the world change-of-basis (phoneToBeamNG).
-    -- 1) Mirror: quaternion conjugate (negate x,y,z) flips an improper/mirrored
-    --    mapping (fixes inverted roll).
-    if mirrorRotation then qx, qy, qz = -qx, -qy, -qz end
-    -- 2) Hold mode: post-multiply by R = rotation of holdMode*90deg about the
-    --    device-local z (view) axis, R = (0, 0, holdS, holdC). This is a
-    --    local-frame relabel, so we POST-multiply q' = q (x) R (NOT conjugate):
-    --    the recenter reference is post-multiplied too, so the refQuat^-1 *
-    --    phoneQuat delta ends up correctly conjugated. Hamilton product of
-    --    q=(qx,qy,qz,qw) with (0,0,s,c):
-    local s, c = holdS, holdC
-    local hx = qx*c + qy*s
-    local hy = qy*c - qx*s
-    local hz = qz*c + qw*s
-    local hw = qw*c - qz*s
+    -- 1) Mirror: a true reflection — negate exactly TWO vector components
+    --    (reflection through the device z-plane). Unlike the conjugate
+    --    (negate all three), a reflection conjugation distributes over
+    --    quaternion products, so the refQuat^-1 * phoneQuat delta mirrors
+    --    cleanly instead of entangling the recenter attitude.
+    if mirrorRotation then qx, qy = -qx, -qy end
+    -- 2) Axis correction, post-multiplied (a local-frame relabel; the
+    --    recenter reference gets the same post-multiply, so the delta ends
+    --    up correctly conjugated). Calibrated holdQuat wins over the
+    --    holdMode preset when present.
+    local hx, hy, hz, hw
+    if holdQuat then
+      local bx, by, bz, bw = holdQuat[1], holdQuat[2], holdQuat[3], holdQuat[4]
+      hx = qw*bx + qx*bw + qy*bz - qz*by
+      hy = qw*by + qy*bw + qz*bx - qx*bz
+      hz = qw*bz + qz*bw + qx*by - qy*bx
+      hw = qw*bw - qx*bx - qy*by - qz*bz
+    else
+      -- holdMode preset: R = (0, 0, holdS, holdC), rotation of holdMode*90deg
+      -- about the device-local z (view) axis.
+      local s, c = holdS, holdC
+      hx = qx*c + qy*s
+      hy = qy*c - qx*s
+      hz = qz*c + qw*s
+      hw = qw*c - qz*s
+    end
 
     phoneQuat = phoneToBeamNG({ hx, hy, hz, hw })
     stats.oscRot = stats.oscRot + 1
@@ -568,6 +597,8 @@ M.getUiStatus = function()
     smoothingTau = smoothingTau,
     holdMode = holdMode,
     mirrorRotation = mirrorRotation,
+    calibStep = calibStep,
+    calibrated = holdQuat ~= nil,
 
     jsonHost = listenHost, jsonPort = listenPort, jsonOpen = udp ~= nil,
     oscHost = oscHost,     oscPort = oscPort,      oscOpen = udpOsc ~= nil,
@@ -645,17 +676,142 @@ M.setHoldMode = function(n)
   n = math.floor((tonumber(n) or 0) + 0.5)
   if n < 0 then n = 0 elseif n > 3 then n = 3 end
   holdMode = n
+  holdQuat = nil               -- manual preset overrides any calibration
   recomputeHold()
   pendingRecenter = true
-  log('I', 'phoneCamera', 'hold mode = ' .. holdMode)
+  log('I', 'phoneCamera', 'hold mode = ' .. holdMode .. ' (calibration cleared)')
 end
 
--- Mirror (all-axis quaternion conjugate) toggle. Also invalidates the
+-- Mirror (device z-plane reflection) toggle. Also invalidates the
 -- reference, so force a recenter.
 M.setMirror = function(v)
   mirrorRotation = v and true or false
   pendingRecenter = true
   log('I', 'phoneCamera', 'mirror rotation = ' .. tostring(mirrorRotation))
+end
+
+-- ---- Axis auto-calibration wizard ------------------------------------
+-- Each call advances one step (UI button or console). Gestures are held
+-- while pressing, all relative to the re-captured neutral pose.
+local function calibDelta(a, b)
+  -- device-frame rotation from pose a to pose b: a^-1 (x) b, unit quats
+  local ax, ay, az, aw = -a[1], -a[2], -a[3], a[4]
+  local bx, by, bz, bw = b[1], b[2], b[3], b[4]
+  return aw*bx + ax*bw + ay*bz - az*by,
+         aw*by + ay*bw + az*bx - ax*bz,
+         aw*bz + az*bw + ax*by - ay*bx,
+         aw*bw - ax*bx - ay*by - az*bz
+end
+
+-- Build the correction quat from the measured device-frame axis columns
+-- p, u, w (Shepperd matrix->quat). Columns are snapped to the nearest
+-- signed permutation when unambiguous (>0.8), so clean grips give an
+-- exact mapping instead of one polluted by gesture wobble.
+local function quatFromColumns(p, u, w)
+  local m = { { p[1], u[1], w[1] }, { p[2], u[2], w[2] }, { p[3], u[3], w[3] } }
+  -- snap attempt
+  local snapped, ok = { {0,0,0}, {0,0,0}, {0,0,0} }, true
+  for c = 1, 3 do
+    local col = { m[1][c], m[2][c], m[3][c] }
+    local bi, bv = 1, math.abs(col[1])
+    for i = 2, 3 do if math.abs(col[i]) > bv then bi, bv = i, math.abs(col[i]) end end
+    if bv < 0.8 then ok = false break end
+    snapped[bi][c] = col[bi] > 0 and 1 or -1
+  end
+  if ok then
+    -- each row must also hold exactly one nonzero (proper permutation)
+    for r = 1, 3 do
+      local nz = math.abs(snapped[r][1]) + math.abs(snapped[r][2]) + math.abs(snapped[r][3])
+      if nz ~= 1 then ok = false break end
+    end
+    if ok then m = snapped end
+  end
+  local m11, m12, m13 = m[1][1], m[1][2], m[1][3]
+  local m21, m22, m23 = m[2][1], m[2][2], m[2][3]
+  local m31, m32, m33 = m[3][1], m[3][2], m[3][3]
+  local tr = m11 + m22 + m33
+  local qx, qy, qz, qw
+  if tr > 0 then
+    local S = math.sqrt(tr + 1) * 2
+    qw = S / 4; qx = (m32 - m23) / S; qy = (m13 - m31) / S; qz = (m21 - m12) / S
+  elseif m11 > m22 and m11 > m33 then
+    local S = math.sqrt(1 + m11 - m22 - m33) * 2
+    qx = S / 4; qw = (m32 - m23) / S; qy = (m12 + m21) / S; qz = (m13 + m31) / S
+  elseif m22 > m33 then
+    local S = math.sqrt(1 + m22 - m11 - m33) * 2
+    qy = S / 4; qw = (m13 - m31) / S; qx = (m12 + m21) / S; qz = (m23 + m32) / S
+  else
+    local S = math.sqrt(1 + m33 - m11 - m22) * 2
+    qz = S / 4; qw = (m21 - m12) / S; qx = (m13 + m31) / S; qy = (m23 + m32) / S
+  end
+  local n = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+  return { qx/n, qy/n, qz/n, qw/n }, ok
+end
+
+M.calibrate = function()
+  if not lastRawQuat then
+    print('phoneCamera CALIBRATE: no phone data yet - start streaming first')
+    return
+  end
+  local q = { lastRawQuat[1], lastRawQuat[2], lastRawQuat[3], lastRawQuat[4] }
+  if calibStep == 0 then
+    calibA = q
+    calibStep = 1
+    print('phoneCamera CALIBRATE 1/4: neutral captured. Now PITCH the phone UP ~45 deg, hold it there, press again.')
+  elseif calibStep == 1 then
+    local dx, dy, dz = calibDelta(calibA, q)
+    local n = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if n < 0.17 then  -- sin(20deg/2)-ish: demand a clear gesture
+      print('phoneCamera CALIBRATE: pitch gesture too small - pitch up further and press again.')
+      return
+    end
+    calibP = { dx/n, dy/n, dz/n }
+    calibStep = 2
+    print('phoneCamera CALIBRATE 2/4: pitch axis captured. Return to NEUTRAL, hold, press again.')
+  elseif calibStep == 2 then
+    calibA = q
+    calibStep = 3
+    print('phoneCamera CALIBRATE 3/4: neutral re-captured. Now TURN (yaw) the phone LEFT ~45 deg, hold, press again.')
+  else
+    local dx, dy, dz = calibDelta(calibA, q)
+    local n = math.sqrt(dx*dx + dy*dy + dz*dz)
+    if n < 0.17 then
+      print('phoneCamera CALIBRATE: yaw gesture too small - turn further left and press again.')
+      return
+    end
+    local p = calibP
+    local ux, uy, uz = dx/n, dy/n, dz/n
+    -- orthonormalize the yaw axis against the pitch axis
+    local dot = ux*p[1] + uy*p[2] + uz*p[3]
+    ux, uy, uz = ux - dot*p[1], uy - dot*p[2], uz - dot*p[3]
+    local un = math.sqrt(ux*ux + uy*uy + uz*uz)
+    if un < 0.3 then
+      print('phoneCamera CALIBRATE: yaw gesture too close to the pitch axis - redo the left turn, press again.')
+      return
+    end
+    ux, uy, uz = ux/un, uy/un, uz/un
+    local wx = p[2]*uz - p[3]*uy
+    local wy = p[3]*ux - p[1]*uz
+    local wz = p[1]*uy - p[2]*ux
+    local hq, snapped = quatFromColumns(p, { ux, uy, uz }, { wx, wy, wz })
+    holdQuat = hq
+    mirrorRotation = false     -- calibration supersedes manual tweaks
+    calibStep = 0
+    calibA, calibP = nil, nil
+    pendingRecenter = true
+    print(string.format(
+      'phoneCamera CALIBRATE done%s: correction quat (%.3f, %.3f, %.3f, %.3f). Recentered - aim and film.',
+      snapped and ' (snapped to exact axes)' or ' (unsnapped, using measured axes)',
+      hq[1], hq[2], hq[3], hq[4]))
+  end
+end
+
+M.calibrateReset = function()
+  calibStep = 0
+  calibA, calibP = nil, nil
+  holdQuat = nil
+  pendingRecenter = true
+  print('phoneCamera CALIBRATE: cleared (back to hold-mode preset)')
 end
 
 M.onExtensionLoaded = onExtensionLoaded

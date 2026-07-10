@@ -177,6 +177,8 @@ angular.module('beamng.apps')
 '  </div>',
 '',
 '  <div class="sec">orientation fix</div>',
+'  <button class="recenter" ng-click="calibrate()">{{ calibLabel }}</button>',
+'  <div class="muted" ng-if="s.calibStep > 0">{{ calibHint }}</div>',
 '  <div class="ctl">',
 '    <span class="k">hold</span>',
 '    <button class="hold" ng-click="cycleHold()">{{ holdName }}</button>',
@@ -228,6 +230,22 @@ angular.module('beamng.apps')
       scope.holdName = HOLD_NAMES[1];
       scope.mirror = false;
 
+      // Calibration wizard: button label + hint follow Lua's calibStep.
+      var CALIB_LABELS = [
+        'CALIBRATE AXES',            // step 0: idle
+        'CAPTURED - PITCH UP, PRESS',    // after step 1
+        'CAPTURED - GO NEUTRAL, PRESS',  // after step 2
+        'CAPTURED - TURN LEFT, PRESS'    // after step 3
+      ];
+      var CALIB_HINTS = [
+        '',
+        'Hold the phone pitched UP ~45 deg, then press the button again.',
+        'Return the phone to your neutral filming pose, then press again.',
+        'Hold the phone turned LEFT ~45 deg, then press to finish.'
+      ];
+      scope.calibLabel = CALIB_LABELS[0];
+      scope.calibHint = '';
+
       function computeConn(d) {
         if (!d) { return { label: 'EXTENSION NOT LOADED', cls: 'grey' }; }
         if (!d.enabled) { return { label: 'DISABLED', cls: 'grey' }; }
@@ -260,6 +278,13 @@ angular.module('beamng.apps')
           scope.holdName = HOLD_NAMES[d.holdMode] || ('mode ' + d.holdMode);
         }
         if (d) { scope.mirror = !!d.mirrorRotation; }
+        if (d && typeof d.calibStep === 'number') {
+          var st = Math.max(0, Math.min(3, d.calibStep));
+          scope.calibLabel = st === 0 && d.calibrated
+            ? 'RE-CALIBRATE AXES (set)'
+            : CALIB_LABELS[st];
+          scope.calibHint = CALIB_HINTS[st];
+        }
       }
 
       function poll() {
@@ -270,6 +295,10 @@ angular.module('beamng.apps')
       }
 
       // ---- controls (fire-and-forget engineLua) ----
+      scope.calibrate = function () {
+        bngApi.engineLua('extensions.phoneCamera.calibrate()');
+        poll();  // refresh the step label promptly
+      };
       scope.recenter = function () {
         bngApi.engineLua('extensions.phoneCamera.recenter()');
       };
