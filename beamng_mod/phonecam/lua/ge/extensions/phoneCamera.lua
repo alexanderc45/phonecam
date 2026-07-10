@@ -27,14 +27,15 @@
 -- BeamNG's world is Z-UP:    X = east, Y = north, Z = UP.
 -- Change of basis = rotate +90 deg about X, so Y -> Z and Z -> -Y:
 --        quat (x, y, z, w) -> (x, -z, y, w)            [phoneToBeamNG]
---        pos  (x, y, z)    -> (x, -z, y)               [arkitPosToBeamNG]
+--        pos: raw ARKit, mapped per-frame in getPosDelta (shares the
+--        rotation path's axis correction; see that function's comment)
 -- Position axis signs are provisional pending in-game verification (a
 -- real ARKit capture showed "lift up" as -Y) — see the sign consts below.
 --
 -- ---- Recentering --------------------------------------------
 -- The phone's absolute heading is meaningless in-game, so on "recenter"
 -- we capture the current phone pose as the reference:
---   refQuat = phoneQuat        refPos = phonePos
+--   refQuat = phoneQuat        refRawQuat/refRawPos = raw ARKit pose
 -- and only ever apply the RELATIVE pose since then. LOTA has no phone-side
 -- recenter button; console recenter() covers it (and the first sample
 -- auto-recenters so the view never snaps on connect).
@@ -84,21 +85,24 @@ local function recomputeHold()
 end
 recomputeHold()
 
--- ARKit -> BeamNG position axis mapping. The base swap is (x,y,z)->(x,-z,y);
--- each output axis has its own sign here so signs can be flipped trivially
--- during in-game verification without touching the swap logic below.
-local POS_SIGN_X =  1   -- BeamNG X  <-  ARKit x
-local POS_SIGN_Y = -1   -- BeamNG Y  <-  ARKit z   (negated)
-local POS_SIGN_Z =  1   -- BeamNG Z  <-  ARKit y
+-- Position is handled in RAW ARKit coordinates and mapped through the SAME
+-- correction chain as rotation (see getPosDelta): world displacement ->
+-- neutral-device frame (rotate by refRawQuat^-1) -> axis correction
+-- (rotate by holdQuat^-1) -> Y-up->Z-up component swap. The result is a
+-- CAMERA-LOCAL offset (right/forward/up), which is exactly what the
+-- phonelook filter applies (data.res.pos + baseRot * pd). This makes
+-- physical movement relative to the recentered facing and automatically
+-- consistent with whatever axis calibration is active.
 
 -- State -------------------------------------------------------
 local udp = nil             -- JSON listen socket (:listenPort)
 local udpOsc = nil          -- OSC  listen socket (:oscPort)
 local enabled = true
 local phoneQuat = nil       -- latest phone orientation (BeamNG frame)
-local phonePos = nil        -- latest phone position    (BeamNG frame)
+local rawPhonePos = nil     -- latest phone position {x,y,z}, RAW ARKit frame
 local refQuat = nil         -- phone orientation captured at recenter
-local refPos = nil          -- phone position captured at recenter
+local refRawQuat = nil      -- RAW ARKit quat captured at recenter (position frame)
+local refRawPos = nil       -- RAW ARKit position captured at recenter
 local camBase = nil         -- camera orientation captured at recenter (free cam)
 local currentQuat = nil     -- smoothed free-cam output orientation
 local currentDelta = nil    -- smoothed head-look delta quat (filter path)
@@ -127,7 +131,14 @@ local lastRotInfo = nil       -- human-readable decode of the last failure
 -- Y-up->Z-up swap (X->camPitch, Y->camYaw, Z->-camRoll pre-swap), so P is
 -- simply the quaternion of the matrix whose COLUMNS are p, u, w.
 local lastRawQuat = nil       -- latest raw ARKit quat {x,y,z,w}, pre-correction
-local holdQuat = nil          -- calibrated correction {x,y,z,w}; overrides holdMode
+-- Default correction: SOLVED from Alex's two in-game reports by brute-forcing
+-- the unique device frame consistent with both (see scratchpad
+-- solve_mapping.lua): user axes in LOTA's device frame are p=(0,0,-1),
+-- u=(1,0,0), w=(0,-1,0), giving P = quatFromColumns = (-0.5,-0.5,0.5,-0.5).
+-- Verified to map pitch->camX, yaw->camZ, roll->camY exactly. The
+-- calibration wizard overwrites this for other grips/devices.
+local DEFAULT_HOLD_QUAT = { -0.5, -0.5, 0.5, -0.5 }
+local holdQuat = DEFAULT_HOLD_QUAT  -- correction {x,y,z,w}; wizard overwrites
 local calibStep = 0           -- 0 idle; 1..3 = wizard progress
 local calibA, calibP = nil, nil  -- captured neutral quat / pitch axis
 
@@ -147,11 +158,18 @@ local function phoneToBeamNG(q)
   return quat(q[1], -q[3], q[2], q[4])
 end
 
--- Convert an ARKit (Y-up, meters) position offset into BeamNG's Z-up
--- frame. Base swap (x, y, z) -> (x, -z, y); signs are the adjustable
--- consts above (PROVISIONAL — verify in-game).
-local function arkitPosToBeamNG(x, y, z)
-  return vec3(POS_SIGN_X * x, POS_SIGN_Y * z, POS_SIGN_Z * y)
+-- Rotate vector v = {x,y,z} by unit quaternion q = {x,y,z,w}: v' = q v q^-1.
+-- Plain-table math (no engine types) so it composes with the raw ARKit data.
+local function qRotateVec(q, vx, vy, vz)
+  local qx, qy, qz, qw = q[1], q[2], q[3], q[4]
+  -- t = 2 * cross(q.xyz, v)
+  local tx = 2 * (qy*vz - qz*vy)
+  local ty = 2 * (qz*vx - qx*vz)
+  local tz = 2 * (qx*vy - qy*vx)
+  -- v' = v + w*t + cross(q.xyz, t)
+  return vx + qw*tx + (qy*tz - qz*ty),
+         vy + qw*ty + (qz*tx - qx*tz),
+         vz + qw*tz + (qx*ty - qy*tx)
 end
 
 -- Normalized linear interpolation between quaternions. Good enough for
@@ -339,8 +357,8 @@ local function handleOsc(data)
     local z = readFloatBE(data, argPos + 8)
     if not (x and y and z) then return end
     if isnaninf(x) or isnaninf(y) or isnaninf(z) then return end
-    phonePos = arkitPosToBeamNG(x, y, z)
-    if not refPos then refPos = phonePos end   -- auto-center first position sample
+    rawPhonePos = { x, y, z }                  -- raw ARKit meters; mapped in getPosDelta
+    if not refRawPos then refRawPos = rawPhonePos end  -- auto-center first sample
     stats.oscPos = stats.oscPos + 1
     onFirstSample()
   end
@@ -414,15 +432,42 @@ M.getHeadLookDelta = function(dtReal)
   return currentDelta
 end
 
--- Smoothed camera-local position delta remap(phonePos - refPos)*scale,
+-- Smoothed camera-local position delta,
 -- exponentially smoothed with the same time constant as the quat.
 -- Returns nil when disabled/position-off/no data. Self-guards NaN.
+-- Camera-local position delta, sharing the rotation path's axis correction:
+--   ARKit world displacement (phone - recenter)
+--     -> neutral device frame   (rotate by refRawQuat^-1)
+--     -> corrected user frame   (rotate by holdQuat^-1; mirror reflects x,y)
+--     -> BeamNG camera-local    (component swap (x,y,z) -> (x,-z,y))
+-- The result means: user walks right -> camera moves right relative to the
+-- recentered shot, regardless of where ARKit's arbitrary world heading is.
+-- Unscaled, unsmoothed camera-local displacement since recenter (vec3), or
+-- nil. Shared by getPosDelta (which scales + smooths it) and the debug/UI
+-- readouts, so what you see is what the camera gets.
+local function rawPosDeltaCamLocal()
+  if not refRawPos or not rawPhonePos or not refRawQuat then return nil end
+  local wx = rawPhonePos[1] - refRawPos[1]
+  local wy = rawPhonePos[2] - refRawPos[2]
+  local wz = rawPhonePos[3] - refRawPos[3]
+  -- world -> neutral device frame (conjugate rotation)
+  local iq = { -refRawQuat[1], -refRawQuat[2], -refRawQuat[3], refRawQuat[4] }
+  local dx, dy, dz = qRotateVec(iq, wx, wy, wz)
+  if mirrorRotation then dx, dy = -dx, -dy end
+  -- device -> corrected user frame (falls back to the holdMode preset quat
+  -- when the calibrated/default holdQuat was cleared via setHoldMode)
+  local hq = holdQuat or { 0, 0, holdS, holdC }
+  local hp = { -hq[1], -hq[2], -hq[3], hq[4] }
+  local ux, uy, uz = qRotateVec(hp, dx, dy, dz)
+  -- Y-up -> Z-up swap into camera-local right/forward/up
+  return vec3(ux, -uz, uy)
+end
+
 M.getPosDelta = function(dtReal)
-  if not enabled or not positionEnabled or not refPos or not phonePos then return nil end
-  -- Both are stored already in BeamNG axes, so the subtraction is the
-  -- remapped local offset (the remap is a linear axis swap, so
-  -- remap(a-b) == remap(a)-remap(b)).
-  local target = (phonePos - refPos) * positionScale
+  if not enabled or not positionEnabled then return nil end
+  local raw = rawPosDeltaCamLocal()
+  if not raw then return nil end
+  local target = raw * positionScale
   local t = 1 - math.exp(-(dtReal or 0.016) / smoothingTau)
   if currentPosDelta then
     currentPosDelta = currentPosDelta + (target - currentPosDelta) * t
@@ -460,7 +505,8 @@ local function onUpdate(dtReal)
   if pendingRecenter and phoneQuat then
     pendingRecenter = false
     refQuat = phoneQuat
-    refPos = phonePos            -- may be nil (JSON path has no position); fine
+    refRawQuat = lastRawQuat     -- raw ARKit reference for the position frame
+    refRawPos = rawPhonePos      -- may be nil (JSON path has no position); fine
     currentDelta = nil
     currentPosDelta = nil
     if commands.isFreeCamera() then
@@ -516,8 +562,8 @@ M.debug = function()
   print(string.format('  datagrams: json=%d osc=%d (rot=%d pos=%d other=%d) unknown=%d',
     stats.json, stats.osc, stats.oscRot, stats.oscPos, stats.oscOther, stats.other))
   print(string.format('  pose: phoneQuat=%s phonePos=%s refQuat=%s refPos=%s pendingRecenter=%s',
-    phoneQuat and 'yes' or 'NO', phonePos and 'yes' or 'NO',
-    refQuat and 'yes' or 'NO', refPos and 'yes' or 'NO', tostring(pendingRecenter)))
+    phoneQuat and 'yes' or 'NO', rawPhonePos and 'yes' or 'NO',
+    refQuat and 'yes' or 'NO', refRawPos and 'yes' or 'NO', tostring(pendingRecenter)))
   print(string.format('  camera: isFreeCamera=%s', tostring(commands.isFreeCamera())))
   print(string.format('  rotFails: tags=%d short=%d nonfinite=%d norm=%d',
     rotFails.tags, rotFails.short, rotFails.nonfinite, rotFails.norm))
@@ -532,9 +578,9 @@ M.debug = function()
     local ang = 2 * math.acos(math.min(1, math.abs(d.w))) * 180 / math.pi
     print(string.format('  delta since recenter: %.4f %.4f %.4f %.4f  (angle %.1f deg)', d.x, d.y, d.z, d.w, ang))
   end
-  if phonePos and refPos then
-    local pd = phonePos - refPos
-    print(string.format('  posDelta since recenter: %.3f %.3f %.3f m', pd.x, pd.y, pd.z))
+  local pd = rawPosDeltaCamLocal()
+  if pd then
+    print(string.format('  posDelta since recenter (cam-local): %.3f %.3f %.3f m', pd.x, pd.y, pd.z))
   end
   if lastRotInfo then print('  lastRotFail: ' .. lastRotInfo) end
   if lastRotRaw then
@@ -583,10 +629,10 @@ M.getUiStatus = function()
     deltaAngle = 2 * math.acos(math.min(1, math.abs(d.w))) * 180 / math.pi
   end
 
-  -- Position delta xyz since recenter (meters, pre-scale), nil-safe.
+  -- Position delta xyz since recenter (camera-local meters, pre-scale).
   local posDelta = nil
-  if phonePos and refPos then
-    local pd = phonePos - refPos
+  local pd = rawPosDeltaCamLocal()
+  if pd then
     posDelta = { x = pd.x, y = pd.y, z = pd.z }
   end
 
@@ -624,7 +670,7 @@ M.getUiStatus = function()
 
     -- Pose availability.
     hasPhoneQuat = phoneQuat ~= nil,
-    hasPhonePos = phonePos ~= nil,
+    hasPhonePos = rawPhonePos ~= nil,
     hasRef = refQuat ~= nil,
     pendingRecenter = pendingRecenter,
     isFreeCamera = commands.isFreeCamera(),
@@ -635,7 +681,7 @@ M.getUiStatus = function()
     filterTickRate = tickRate,
 
     deltaAngle = deltaAngle,   -- nil until first recenter + sample
-    posDelta = posDelta,       -- nil unless both phonePos and refPos exist
+    posDelta = posDelta,       -- camera-local; nil until position + recenter exist
   }
 end
 
@@ -809,9 +855,9 @@ end
 M.calibrateReset = function()
   calibStep = 0
   calibA, calibP = nil, nil
-  holdQuat = nil
+  holdQuat = DEFAULT_HOLD_QUAT   -- back to the field-solved default mapping
   pendingRecenter = true
-  print('phoneCamera CALIBRATE: cleared (back to hold-mode preset)')
+  print('phoneCamera CALIBRATE: cleared (back to the default mapping)')
 end
 
 M.onExtensionLoaded = onExtensionLoaded
