@@ -122,8 +122,24 @@ end
 local ffi_ok, ffi = pcall(require, 'ffi')
 local ffiBuf, ffiFloatPtr
 if ffi_ok and ffi then
-  ffiBuf = ffi.new('uint8_t[4]')
-  ffiFloatPtr = ffi.cast('float*', ffiBuf)
+  local ok = pcall(function()
+    ffiBuf = ffi.new('uint8_t[4]')
+    ffiFloatPtr = ffi.cast('float*', ffiBuf)
+  end)
+  if not ok then ffiBuf, ffiFloatPtr = nil, nil end
+end
+-- Self-test: BeamNG's sandboxed GE Lua exposes a STUB ffi whose cast is a
+-- no-op — indexing then returns the raw byte instead of the aliased float
+-- (observed in the field: every float decoded as its own last byte). Decode
+-- the known constant 1.0f (big-endian 3f 80 00 00); if the fast path lies,
+-- disable it and rely on the pure-Lua decoder below.
+if ffiFloatPtr then
+  ffiBuf[0] = 0x00; ffiBuf[1] = 0x00; ffiBuf[2] = 0x80; ffiBuf[3] = 0x3f
+  local probe = tonumber(ffiFloatPtr[0])
+  if probe ~= 1.0 then
+    ffiBuf, ffiFloatPtr = nil, nil
+    log('W', 'phoneCamera', 'ffi float decode unavailable/stubbed; using pure-Lua decoder')
+  end
 end
 
 -- Pure-Lua IEEE-754 single-precision decode (fallback if ffi is absent).
