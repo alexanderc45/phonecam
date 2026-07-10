@@ -138,9 +138,27 @@ local lastRawQuat = nil       -- latest raw ARKit quat {x,y,z,w}, pre-correction
 -- Verified to map pitch->camX, yaw->camZ, roll->camY exactly. The
 -- calibration wizard overwrites this for other grips/devices.
 local DEFAULT_HOLD_QUAT = { -0.5, -0.5, 0.5, -0.5 }
-local holdQuat = DEFAULT_HOLD_QUAT  -- correction {x,y,z,w}; wizard overwrites
+local holdQuat = DEFAULT_HOLD_QUAT  -- correction {x,y,z,w}
 local calibStep = 0           -- 0 idle; 1..3 = wizard progress
 local calibA, calibP = nil, nil  -- captured neutral quat / pitch axis
+
+-- ---- Gravity-derived grip frame (the default mode) --------------------
+-- The correction is recomputed AT EVERY RECENTER from what is actually
+-- measurable in that instant: ARKit's world +Y is gravity-up, so the
+-- user's up-axis in device coordinates is exact (refRaw^-1 * worldUp).
+-- The device view axis is the one remaining constant (VIEW_AXIS_DEV,
+-- field-solved: LOTA's device +y points at the scene); it is
+-- horizontalized against the measured up, right = view x up, and the
+-- wizard formula (columns right, up, right x up) yields the correction.
+-- Result: recenter in ANY grip/tilt and pitch/yaw/roll align to it —
+-- fixes the "auto-recenter fired while the phone lay on the desk" frame
+-- scramble that a fixed correction cannot handle.
+-- gripAuto=false (wizard or manual preset) locks holdQuat instead.
+local VIEW_AXIS_DEV = { 0, 1, 0 }
+local gripAuto = true
+local lastRotClock = nil      -- frameClock at last rotation packet; a >2s
+                              -- gap in the stream triggers auto-recenter
+                              -- (console-free re-zero: toggle LOTA's stream)
 
 -- Real-time seconds accumulated from onUpdate's dtReal. Used only as the
 -- clock for the UI app's live-rate math, so we never touch a wall-clock
@@ -156,6 +174,95 @@ local uiRatePrev = nil
 -- (x, y, z, w) -> (x, -z, y, w). Reused by both the JSON and OSC paths.
 local function phoneToBeamNG(q)
   return quat(q[1], -q[3], q[2], q[4])
+end
+
+-- Apply the full device-side correction chain to a raw ARKit quat {x,y,z,w}:
+-- mirror (z-plane reflection), then the axis correction (calibrated/derived
+-- holdQuat, or the holdMode preset), then the Y-up->Z-up swap. Single source
+-- of truth used by the packet path AND by recenter's re-derivation.
+local function correctRaw(q4)
+  local qx, qy, qz, qw = q4[1], q4[2], q4[3], q4[4]
+  if mirrorRotation then qx, qy = -qx, -qy end
+  local bx, by, bz, bw
+  if holdQuat then
+    bx, by, bz, bw = holdQuat[1], holdQuat[2], holdQuat[3], holdQuat[4]
+  else
+    bx, by, bz, bw = 0, 0, holdS, holdC
+  end
+  local hx = qw*bx + qx*bw + qy*bz - qz*by
+  local hy = qw*by + qy*bw + qz*bx - qx*bz
+  local hz = qw*bz + qz*bw + qx*by - qy*bx
+  local hw = qw*bw - qx*bx - qy*by - qz*bz
+  return phoneToBeamNG({ hx, hy, hz, hw })
+end
+
+-- Matrix (columns p,u,w) -> quat, with snap-to-exact-axes when unambiguous.
+-- Shared by the calibration wizard and the gravity grip derivation.
+local function quatFromColumns(p, u, w)
+  local m = { { p[1], u[1], w[1] }, { p[2], u[2], w[2] }, { p[3], u[3], w[3] } }
+  local snapped, ok = { {0,0,0}, {0,0,0}, {0,0,0} }, true
+  for c = 1, 3 do
+    local col = { m[1][c], m[2][c], m[3][c] }
+    local bi, bv = 1, math.abs(col[1])
+    for i = 2, 3 do if math.abs(col[i]) > bv then bi, bv = i, math.abs(col[i]) end end
+    if bv < 0.8 then ok = false break end
+    snapped[bi][c] = col[bi] > 0 and 1 or -1
+  end
+  if ok then
+    for r = 1, 3 do
+      local nz = math.abs(snapped[r][1]) + math.abs(snapped[r][2]) + math.abs(snapped[r][3])
+      if nz ~= 1 then ok = false break end
+    end
+    if ok then m = snapped end
+  end
+  local m11, m12, m13 = m[1][1], m[1][2], m[1][3]
+  local m21, m22, m23 = m[2][1], m[2][2], m[2][3]
+  local m31, m32, m33 = m[3][1], m[3][2], m[3][3]
+  local tr = m11 + m22 + m33
+  local qx, qy, qz, qw
+  if tr > 0 then
+    local S = math.sqrt(tr + 1) * 2
+    qw = S / 4; qx = (m32 - m23) / S; qy = (m13 - m31) / S; qz = (m21 - m12) / S
+  elseif m11 > m22 and m11 > m33 then
+    local S = math.sqrt(1 + m11 - m22 - m33) * 2
+    qx = S / 4; qw = (m32 - m23) / S; qy = (m12 + m21) / S; qz = (m13 + m31) / S
+  elseif m22 > m33 then
+    local S = math.sqrt(1 + m22 - m11 - m33) * 2
+    qy = S / 4; qw = (m13 - m31) / S; qx = (m12 + m21) / S; qz = (m23 + m32) / S
+  else
+    local S = math.sqrt(1 + m33 - m11 - m22) * 2
+    qz = S / 4; qw = (m21 - m12) / S; qx = (m13 + m31) / S; qy = (m23 + m32) / S
+  end
+  local n = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+  return { qx/n, qy/n, qz/n, qw/n }, ok
+end
+
+-- Derive the grip correction from gravity at a given raw attitude:
+--   up (device coords)  = refRaw^-1 * worldUp   (exact, gravity-measured)
+--   view                = VIEW_AXIS_DEV horizontalized against up
+--   right               = view x up
+-- Returns nil when the view axis is within ~18deg of vertical (phone
+-- pointing straight up/down — no stable heading to build a frame from).
+local function computeGripCorrection(refRaw)
+  local iq = { -refRaw[1], -refRaw[2], -refRaw[3], refRaw[4] }
+  local ux, uy, uz = qRotateVec(iq, 0, 1, 0)
+  local un = math.sqrt(ux*ux + uy*uy + uz*uz)
+  if un < 1e-6 then return nil end
+  ux, uy, uz = ux/un, uy/un, uz/un
+  local fx, fy, fz = VIEW_AXIS_DEV[1], VIEW_AXIS_DEV[2], VIEW_AXIS_DEV[3]
+  local d = fx*ux + fy*uy + fz*uz
+  fx, fy, fz = fx - d*ux, fy - d*uy, fz - d*uz
+  local fn = math.sqrt(fx*fx + fy*fy + fz*fz)
+  if fn < 0.3 then return nil end        -- view too close to vertical
+  fx, fy, fz = fx/fn, fy/fn, fz/fn
+  -- right = view x up; wizard columns are (p=right, u=up, w=p x u)
+  local rx = fy*uz - fz*uy
+  local ry = fz*ux - fx*uz
+  local rz = fx*uy - fy*ux
+  local wx = ry*uz - rz*uy
+  local wy = rz*ux - rx*uz
+  local wz = rx*uy - ry*ux
+  return quatFromColumns({ rx, ry, rz }, { ux, uy, uz }, { wx, wy, wz })
 end
 
 -- Rotate vector v = {x,y,z} by unit quaternion q = {x,y,z,w}: v' = q v q^-1.
@@ -315,38 +422,17 @@ local function handleOsc(data)
       return
     end
     local inv = 1 / math.sqrt(n2)
-    local qx, qy, qz, qw = x*inv, y*inv, z*inv, w*inv
-    lastRawQuat = { qx, qy, qz, qw }   -- pure raw sample, feeds calibration
+    lastRawQuat = { x*inv, y*inv, z*inv, w*inv }  -- raw sample; feeds calibration/recenter
 
-    -- Device-local corrections BEFORE the world change-of-basis (phoneToBeamNG).
-    -- 1) Mirror: a true reflection — negate exactly TWO vector components
-    --    (reflection through the device z-plane). Unlike the conjugate
-    --    (negate all three), a reflection conjugation distributes over
-    --    quaternion products, so the refQuat^-1 * phoneQuat delta mirrors
-    --    cleanly instead of entangling the recenter attitude.
-    if mirrorRotation then qx, qy = -qx, -qy end
-    -- 2) Axis correction, post-multiplied (a local-frame relabel; the
-    --    recenter reference gets the same post-multiply, so the delta ends
-    --    up correctly conjugated). Calibrated holdQuat wins over the
-    --    holdMode preset when present.
-    local hx, hy, hz, hw
-    if holdQuat then
-      local bx, by, bz, bw = holdQuat[1], holdQuat[2], holdQuat[3], holdQuat[4]
-      hx = qw*bx + qx*bw + qy*bz - qz*by
-      hy = qw*by + qy*bw + qz*bx - qx*bz
-      hz = qw*bz + qz*bw + qx*by - qy*bx
-      hw = qw*bw - qx*bx - qy*by - qz*bz
-    else
-      -- holdMode preset: R = (0, 0, holdS, holdC), rotation of holdMode*90deg
-      -- about the device-local z (view) axis.
-      local s, c = holdS, holdC
-      hx = qx*c + qy*s
-      hy = qy*c - qx*s
-      hz = qz*c + qw*s
-      hw = qw*c - qz*s
+    -- Console-free re-zero: a gap in the stream (LOTA toggled off/on, app
+    -- backgrounded) means the user repositioned — re-derive the frame.
+    if lastRotClock and (frameClock - lastRotClock) > 2 then
+      pendingRecenter = true
     end
+    lastRotClock = frameClock
 
-    phoneQuat = phoneToBeamNG({ hx, hy, hz, hw })
+    -- Full correction chain (mirror -> holdQuat/preset -> Y-up->Z-up swap).
+    phoneQuat = correctRaw(lastRawQuat)
     stats.oscRot = stats.oscRot + 1
     if stats.oscRot == 1 then print('phoneCamera: first OSC rotation received - phone is live') end
     onFirstSample()
@@ -504,6 +590,19 @@ local function onUpdate(dtReal)
   -- orbit/hood/cab/chase, not just free cam.
   if pendingRecenter and phoneQuat then
     pendingRecenter = false
+    -- Gravity mode: re-derive the axis correction from THIS grip's attitude
+    -- before capturing references, so pitch/roll align to however the phone
+    -- is actually held right now. Falls back to the previous correction when
+    -- the phone points near-vertically (no stable heading).
+    if gripAuto and lastRawQuat then
+      local g = computeGripCorrection(lastRawQuat)
+      if g then holdQuat = g end
+    end
+    -- Recompute the converted pose with the (possibly new) correction so the
+    -- reference and subsequent packets share one frame.
+    if lastRawQuat then
+      phoneQuat = correctRaw(lastRawQuat)
+    end
     refQuat = phoneQuat
     refRawQuat = lastRawQuat     -- raw ARKit reference for the position frame
     refRawPos = rawPhonePos      -- may be nil (JSON path has no position); fine
@@ -645,6 +744,7 @@ M.getUiStatus = function()
     mirrorRotation = mirrorRotation,
     calibStep = calibStep,
     calibrated = holdQuat ~= nil,
+    gripAuto = gripAuto,
 
     jsonHost = listenHost, jsonPort = listenPort, jsonOpen = udp ~= nil,
     oscHost = oscHost,     oscPort = oscPort,      oscOpen = udpOsc ~= nil,
@@ -723,6 +823,7 @@ M.setHoldMode = function(n)
   if n < 0 then n = 0 elseif n > 3 then n = 3 end
   holdMode = n
   holdQuat = nil               -- manual preset overrides any calibration
+  gripAuto = false             -- and disables gravity re-derivation
   recomputeHold()
   pendingRecenter = true
   log('I', 'phoneCamera', 'hold mode = ' .. holdMode .. ' (calibration cleared)')
@@ -749,50 +850,8 @@ local function calibDelta(a, b)
          aw*bw - ax*bx - ay*by - az*bz
 end
 
--- Build the correction quat from the measured device-frame axis columns
--- p, u, w (Shepperd matrix->quat). Columns are snapped to the nearest
--- signed permutation when unambiguous (>0.8), so clean grips give an
--- exact mapping instead of one polluted by gesture wobble.
-local function quatFromColumns(p, u, w)
-  local m = { { p[1], u[1], w[1] }, { p[2], u[2], w[2] }, { p[3], u[3], w[3] } }
-  -- snap attempt
-  local snapped, ok = { {0,0,0}, {0,0,0}, {0,0,0} }, true
-  for c = 1, 3 do
-    local col = { m[1][c], m[2][c], m[3][c] }
-    local bi, bv = 1, math.abs(col[1])
-    for i = 2, 3 do if math.abs(col[i]) > bv then bi, bv = i, math.abs(col[i]) end end
-    if bv < 0.8 then ok = false break end
-    snapped[bi][c] = col[bi] > 0 and 1 or -1
-  end
-  if ok then
-    -- each row must also hold exactly one nonzero (proper permutation)
-    for r = 1, 3 do
-      local nz = math.abs(snapped[r][1]) + math.abs(snapped[r][2]) + math.abs(snapped[r][3])
-      if nz ~= 1 then ok = false break end
-    end
-    if ok then m = snapped end
-  end
-  local m11, m12, m13 = m[1][1], m[1][2], m[1][3]
-  local m21, m22, m23 = m[2][1], m[2][2], m[2][3]
-  local m31, m32, m33 = m[3][1], m[3][2], m[3][3]
-  local tr = m11 + m22 + m33
-  local qx, qy, qz, qw
-  if tr > 0 then
-    local S = math.sqrt(tr + 1) * 2
-    qw = S / 4; qx = (m32 - m23) / S; qy = (m13 - m31) / S; qz = (m21 - m12) / S
-  elseif m11 > m22 and m11 > m33 then
-    local S = math.sqrt(1 + m11 - m22 - m33) * 2
-    qx = S / 4; qw = (m32 - m23) / S; qy = (m12 + m21) / S; qz = (m13 + m31) / S
-  elseif m22 > m33 then
-    local S = math.sqrt(1 + m22 - m11 - m33) * 2
-    qy = S / 4; qw = (m13 - m31) / S; qx = (m12 + m21) / S; qz = (m23 + m32) / S
-  else
-    local S = math.sqrt(1 + m33 - m11 - m22) * 2
-    qz = S / 4; qw = (m21 - m12) / S; qx = (m13 + m31) / S; qy = (m23 + m32) / S
-  end
-  local n = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
-  return { qx/n, qy/n, qz/n, qw/n }, ok
-end
+-- (quatFromColumns is defined near the top of the file, shared with the
+-- gravity grip derivation.)
 
 M.calibrate = function()
   if not lastRawQuat then
@@ -841,6 +900,7 @@ M.calibrate = function()
     local wz = p[1]*uy - p[2]*ux
     local hq, snapped = quatFromColumns(p, { ux, uy, uz }, { wx, wy, wz })
     holdQuat = hq
+    gripAuto = false           -- wizard result is authoritative; no re-derivation
     mirrorRotation = false     -- calibration supersedes manual tweaks
     calibStep = 0
     calibA, calibP = nil, nil
@@ -855,7 +915,8 @@ end
 M.calibrateReset = function()
   calibStep = 0
   calibA, calibP = nil, nil
-  holdQuat = DEFAULT_HOLD_QUAT   -- back to the field-solved default mapping
+  holdQuat = DEFAULT_HOLD_QUAT   -- placeholder until the next recenter derives
+  gripAuto = true                -- gravity mode back on
   pendingRecenter = true
   print('phoneCamera CALIBRATE: cleared (back to the default mapping)')
 end
