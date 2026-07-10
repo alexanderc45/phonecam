@@ -4,6 +4,16 @@ Use your smartphone as a **virtual camera crane** for BeamNG.drive video recordi
 
 No mobile app required: the phone just opens a web page.
 
+## ⚡ Quick install (zip)
+
+1. **[Download phonecam.zip](https://github.com/alexanderc45/phonecam/raw/master/phonecam.zip)**
+2. Drop it — **without unzipping** — into your BeamNG mods folder:
+   - Current versions (0.32+): `%LOCALAPPDATA%\BeamNG.drive\<version>\mods\`
+   - Older versions: `Documents\BeamNG.drive\<version>\mods\`
+3. Restart BeamNG (or enable it in the in-game Mods manager). Done — BeamNG loads packed mods straight from the zip.
+
+You still need the relay server on your PC (step 2 below) — grab it with `git clone https://github.com/alexanderc45/phonecam.git` or via GitHub's **Code → Download ZIP**.
+
 ```
 ┌─────────┐  DeviceOrientation   ┌──────────────┐        UDP         ┌──────────────┐
 │  Phone   │ ──── WebSocket ────▶ │ Relay server │ ──── (JSON) ─────▶ │ BeamNG.drive │
@@ -42,7 +52,7 @@ Full derivations are in the comments of `web/index.html` and `phoneCamera.lua`.
 
 ### 1. Install the BeamNG mod
 
-Copy `beamng_mod/phonecam` into your BeamNG **unpacked mods** folder:
+Easiest: use the [Quick install zip](#-quick-install-zip) above. Alternatively (e.g. if you want to edit the Lua), copy `beamng_mod/phonecam` into your BeamNG **unpacked mods** folder:
 
 - Current versions (0.32+): `%LOCALAPPDATA%\BeamNG.drive\<version>\mods\unpacked\phonecam`
 - Older versions: `Documents\BeamNG.drive\<version>\mods\unpacked\phonecam`
@@ -98,6 +108,14 @@ Phone and server machine must be on the **same Wi-Fi**. Open the printed URL (e.
 | `extensions.phoneCamera.setEnabled(false)` | pause phone control |
 | `extensions.phoneCamera.setSmoothing(0.15)` | smoothing time constant in seconds (default 0.06) |
 | `extensions.phoneCamera.setPort(5555)` | change the UDP listen port |
+
+## Development note
+
+`phonecam.zip` is the packed build of `beamng_mod/phonecam/`. After changing any mod file, regenerate and commit it:
+
+```powershell
+git archive --format=zip -o phonecam.zip HEAD:beamng_mod/phonecam
+```
 
 ## Troubleshooting
 
