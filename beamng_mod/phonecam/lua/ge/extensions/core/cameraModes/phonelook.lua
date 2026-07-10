@@ -40,7 +40,13 @@ function C:init()
   self.isGlobal = true      -- one shared singleton; survives veh/level changes
   self.isFilter = true      -- excluded from per-vehicle cams (camera.lua:520)
   self.hidden = true        -- not shown in the Options UI camera list
-  self.runningOrder = 100   -- run LAST (ascending sort; trackir = 0.5)
+  -- Running order (ascending) verified in-game: transition=0.2, trackir=0.5,
+  -- fallback=0.6, gameengine=1. 'gameengine' is the step that pushes the
+  -- composed camera into the C++ engine — anything AFTER it composes into a
+  -- Lua table the renderer never sees (found the hard way: order 100 ran
+  -- perfectly and moved nothing). We must run after trackir/fallback but
+  -- strictly BEFORE gameengine.
+  self.runningOrder = 0.7
 end
 
 function C:update(data)
