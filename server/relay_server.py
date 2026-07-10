@@ -34,6 +34,14 @@ try:
 except ImportError:
     sys.exit("Missing dependency: run  pip install websockets")
 
+# Line-buffer stdout and force UTF-8: keeps output visible when redirected
+# (Python fully buffers non-tty stdout, so a killed process would lose it)
+# and lets the QR block characters print on legacy Windows codepages.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+except Exception:
+    pass
+
 # When frozen into a PyInstaller onefile exe, bundled data (the web client)
 # is unpacked to a temp dir exposed as sys._MEIPASS; otherwise use the repo.
 if getattr(sys, "frozen", False):
