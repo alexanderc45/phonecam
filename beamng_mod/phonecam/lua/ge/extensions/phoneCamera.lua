@@ -79,6 +79,8 @@ local currentDelta = nil    -- smoothed head-look delta quat (filter path)
 local currentPosDelta = nil -- smoothed position delta vec3  (filter path)
 local pendingRecenter = false
 local packetsSeen = 0
+-- Per-kind datagram counters for extensions.phoneCamera.debug()
+local stats = { json = 0, osc = 0, oscRot = 0, oscPos = 0, oscOther = 0, other = 0 }
 
 -- Convert the phone's Y-up quaternion into BeamNG's Z-up frame.
 -- (x, y, z, w) -> (x, -z, y, w). Reused by both the JSON and OSC paths.
@@ -178,7 +180,7 @@ local function handleOsc(data)
   -- are ignored (cheap early-out before decoding args).
   local isRot = (addr == '/lota/camera/rotation')
   local isPos = (addr == '/lota/camera/position')
-  if not (isRot or isPos) then return end
+  if not (isRot or isPos) then stats.oscOther = stats.oscOther + 1; return end
 
   local tagPos = math.ceil(addrEnd / 4) * 4 + 1 -- start of type-tag string
   if data:byte(tagPos) ~= 44 then return end    -- 44 == ',' ; malformed otherwise
@@ -201,6 +203,8 @@ local function handleOsc(data)
     if isnaninf(n2) or n2 < 1e-6 or math.abs(n2 - 1) > 0.1 then return end
     local inv = 1 / math.sqrt(n2)
     phoneQuat = phoneToBeamNG({ x*inv, y*inv, z*inv, w*inv })
+    stats.oscRot = stats.oscRot + 1
+    if stats.oscRot == 1 then print('phoneCamera: first OSC rotation received — phone is live') end
     onFirstSample()
   else -- isPos
     if tags ~= 'fff' then return end
@@ -211,6 +215,7 @@ local function handleOsc(data)
     if isnaninf(x) or isnaninf(y) or isnaninf(z) then return end
     phonePos = arkitPosToBeamNG(x, y, z)
     if not refPos then refPos = phonePos end   -- auto-center first position sample
+    stats.oscPos = stats.oscPos + 1
     onFirstSample()
   end
 end
@@ -221,10 +226,13 @@ local function handleDatagram(data)
   if not data or #data == 0 then return end
   local c = string.byte(data, 1)
   if c == 123 then          -- '{'  JSON
+    stats.json = stats.json + 1
     handleJson(data)
   elseif c == 47 then       -- '/'  OSC message
+    stats.osc = stats.osc + 1
     handleOsc(data)
-  -- c == 35 ('#') OSC bundle: skipped. Anything else: ignored.
+  else                      -- '#' OSC bundle or unknown: counted, ignored
+    stats.other = stats.other + 1
   end
 end
 
@@ -361,6 +369,24 @@ end
 
 -- Public API (console: extensions.phoneCamera.<fn>) ------------
 M.recenter = function() pendingRecenter = true end
+
+-- One-shot status dump via print() (always visible in the console
+-- regardless of log-level filters). The first place to look when
+-- "nothing happens".
+M.debug = function()
+  print('phoneCamera status:')
+  print(string.format('  enabled=%s positionEnabled=%s scale=%.2f tau=%.3fs',
+    tostring(enabled), tostring(positionEnabled), positionScale, smoothingTau))
+  print(string.format('  sockets: json=%s:%d (%s)  osc=%s:%d (%s)',
+    listenHost, listenPort, udp and 'open' or 'CLOSED',
+    oscHost, oscPort, udpOsc and 'open' or 'CLOSED'))
+  print(string.format('  datagrams: json=%d osc=%d (rot=%d pos=%d other=%d) unknown=%d',
+    stats.json, stats.osc, stats.oscRot, stats.oscPos, stats.oscOther, stats.other))
+  print(string.format('  pose: phoneQuat=%s phonePos=%s refQuat=%s refPos=%s pendingRecenter=%s',
+    phoneQuat and 'yes' or 'NO', phonePos and 'yes' or 'NO',
+    refQuat and 'yes' or 'NO', refPos and 'yes' or 'NO', tostring(pendingRecenter)))
+  print(string.format('  camera: isFreeCamera=%s', tostring(commands.isFreeCamera())))
+end
 
 M.setEnabled = function(v)
   enabled = v and true or false
