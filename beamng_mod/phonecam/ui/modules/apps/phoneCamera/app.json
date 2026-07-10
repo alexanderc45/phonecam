@@ -9,5 +9,7 @@
   "category": "Camera",
   "css": { "width": "260px", "height": "400px", "top": "80px", "left": "80px", "position": "absolute" },
   "directive": "phoneCameraApp",
+  "isAuxiliary": false,
+  "interactive": "yes",
   "domElement": "<phone-camera-app></phone-camera-app>"
 }
