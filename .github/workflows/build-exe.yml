@@ -1,0 +1,60 @@
+# Builds a standalone Windows exe of the relay server (Python + web client
+# bundled, nothing to install) and publishes it to the rolling "latest"
+# GitHub release on every relevant push to master.
+name: Build relay exe
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "server/**"
+      - "web/**"
+      - ".github/workflows/build-exe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create/update the release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r server/requirements.txt pyinstaller
+
+      # --onefile   : single self-contained exe
+      # --add-data  : bundle the web client next to the code ("web;web" is
+      #               src;dest with Windows' ; separator)
+      - name: Build exe
+        run: pyinstaller --onefile --console --name PhoneCamRelay --add-data "web;web" server/relay_server.py
+
+      - name: Smoke test (exe starts and prints banner)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist/PhoneCamRelay.exe -PassThru -RedirectStandardOutput out.txt -NoNewWindow
+          Start-Sleep -Seconds 8
+          Stop-Process -Id $p.Id -Force
+          Get-Content out.txt
+          if (-not (Select-String -Path out.txt -Pattern "relay is running" -Quiet)) { exit 1 }
+
+      - name: Publish to rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: PhoneCam Relay — latest build
+          body: |
+            Standalone relay server for the BeamNG Phone Camera mod. No Python required.
+
+            1. Download **PhoneCamRelay.exe** below and double-click it (SmartScreen may warn — More info → Run anyway; it's unsigned).
+            2. Scan the QR code it prints with your phone and tap **Start streaming**.
+            3. Grab **phonecam.zip** from the repo README and drop it into your BeamNG `mods` folder.
+
+            Built automatically from the latest `master` by GitHub Actions.
+          files: dist/PhoneCamRelay.exe
+          make_latest: true

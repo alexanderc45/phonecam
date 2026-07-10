@@ -4,15 +4,17 @@ Use your smartphone as a **virtual camera crane** for BeamNG.drive video recordi
 
 No mobile app required: the phone just opens a web page.
 
-## ⚡ Quick install (zip)
+## ⚡ Quick install — two downloads, no tools required
 
-1. **[Download phonecam.zip](https://github.com/alexanderc45/phonecam/raw/master/phonecam.zip)**
-2. Drop it — **without unzipping** — into your BeamNG mods folder:
+1. **The mod:** [download phonecam.zip](https://github.com/alexanderc45/phonecam/raw/master/phonecam.zip) and drop it — **without unzipping** — into your BeamNG mods folder:
    - Current versions (0.32+): `%LOCALAPPDATA%\BeamNG.drive\<version>\mods\`
    - Older versions: `Documents\BeamNG.drive\<version>\mods\`
-3. Restart BeamNG (or enable it in the in-game Mods manager). Done — BeamNG loads packed mods straight from the zip.
+2. **The server:** [download PhoneCamRelay.exe](https://github.com/alexanderc45/phonecam/releases/latest/download/PhoneCamRelay.exe) (from [Releases](https://github.com/alexanderc45/phonecam/releases)) and double-click it. Python and the web client are bundled inside — nothing to install. It prints a QR code; scan it with your phone.
 
-You still need the relay server on your PC (step 2 below) — grab it with `git clone https://github.com/alexanderc45/phonecam.git` or via GitHub's **Code → Download ZIP**.
+   > The exe is unsigned, so Windows SmartScreen may warn on first run — click **More info → Run anyway**. Allow it through the firewall prompt (private networks).
+3. Start BeamNG, press **Shift+C** for free camera, tap **Start streaming** then **Recenter camera** on the phone. Done.
+
+Prefer running from source instead of the exe? See [Run the relay server](#2-run-the-relay-server) below.
 
 ```
 ┌─────────┐  DeviceOrientation   ┌──────────────┐        UDP         ┌──────────────┐
@@ -61,7 +63,9 @@ Easiest: use the [Quick install zip](#-quick-install-zip) above. Alternatively (
 
 ### 2. Run the relay server
 
-Requires Python 3.10+.
+**Option A — standalone exe (easiest):** [PhoneCamRelay.exe](https://github.com/alexanderc45/phonecam/releases/latest/download/PhoneCamRelay.exe), double-click, done. It's built automatically from `master` by GitHub Actions (`.github/workflows/build-exe.yml`), so it's always current. Command-line flags below work with the exe too (e.g. `PhoneCamRelay.exe --udp-host 192.168.1.50`).
+
+**Option B — from source.** Requires Python 3.10+:
 
 ```powershell
 pip install -r server\requirements.txt

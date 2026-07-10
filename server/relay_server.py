@@ -34,7 +34,12 @@ try:
 except ImportError:
     sys.exit("Missing dependency: run  pip install websockets")
 
-WEB_DIR = pathlib.Path(__file__).resolve().parent.parent / "web"
+# When frozen into a PyInstaller onefile exe, bundled data (the web client)
+# is unpacked to a temp dir exposed as sys._MEIPASS; otherwise use the repo.
+if getattr(sys, "frozen", False):
+    WEB_DIR = pathlib.Path(sys._MEIPASS) / "web"  # type: ignore[attr-defined]
+else:
+    WEB_DIR = pathlib.Path(__file__).resolve().parent.parent / "web"
 
 
 def lan_ip() -> str:
@@ -46,6 +51,21 @@ def lan_ip() -> str:
             return s.getsockname()[0]
     except OSError:
         return "127.0.0.1"
+
+
+def print_qr(url: str) -> None:
+    """Render the phone URL as an ASCII QR code in the console so players
+    can scan it instead of typing an IP address. Optional dependency —
+    silently skipped if qrcode isn't installed or the console can't
+    display the block characters."""
+    try:
+        import qrcode
+
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(url)
+        qr.print_ascii(invert=True)
+    except Exception:
+        pass
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -110,9 +130,12 @@ async def main() -> None:
 
     scheme = "https" if ssl_ctx else "http"
     ip = lan_ip()
+    url = f"{scheme}://{ip}:{args.http_port}"
     print("=" * 60)
     print("BeamNG Phone Camera relay is running")
-    print(f"  1. On your phone (same Wi-Fi), open:  {scheme}://{ip}:{args.http_port}")
+    print(f"  1. On your phone (same Wi-Fi), open:  {url}")
+    print("     ...or scan this QR code:")
+    print_qr(url)
     print(f"  2. Telemetry: WebSocket :{args.ws_port}  ->  UDP {udp_target[0]}:{udp_target[1]}")
     print("  3. Start BeamNG, enable free camera (Shift+C), tap 'Start streaming'")
     print("Press Ctrl+C to stop.")
@@ -127,3 +150,8 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nStopped.")
+    except Exception as exc:  # keep the console window readable when the
+        print(f"\nERROR: {exc}")  # exe was double-clicked and something
+        if getattr(sys, "frozen", False):  # failed (e.g. port already in use)
+            input("Press Enter to close...")
+        raise
