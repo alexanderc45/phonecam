@@ -81,6 +81,11 @@ local pendingRecenter = false
 local packetsSeen = 0
 -- Per-kind datagram counters for extensions.phoneCamera.debug()
 local stats = { json = 0, osc = 0, oscRot = 0, oscPos = 0, oscOther = 0, other = 0 }
+-- Rotation-parse failure forensics: why each rotation datagram was
+-- rejected, plus a raw sample of the last failure for offline analysis.
+local rotFails = { tags = 0, short = 0, nonfinite = 0, norm = 0 }
+local lastRotRaw = nil        -- first 64 bytes of the last failing datagram
+local lastRotInfo = nil       -- human-readable decode of the last failure
 
 -- Convert the phone's Y-up quaternion into BeamNG's Z-up frame.
 -- (x, y, z, w) -> (x, -z, y, w). Reused by both the JSON and OSC paths.
@@ -190,17 +195,37 @@ local function handleOsc(data)
   local argPos = tagPos + math.ceil((tagEnd - tagPos + 1) / 4) * 4
 
   if isRot then
-    if tags ~= 'ffff' then return end
+    if tags ~= 'ffff' then
+      rotFails.tags = rotFails.tags + 1
+      lastRotRaw = data:sub(1, 64)
+      lastRotInfo = string.format('tags=%q argPos=%d len=%d', tags, argPos, #data)
+      return
+    end
     local x = readFloatBE(data, argPos)
     local y = readFloatBE(data, argPos + 4)
     local z = readFloatBE(data, argPos + 8)
     local w = readFloatBE(data, argPos + 12)
-    if not (x and y and z and w) then return end
-    if isnaninf(x) or isnaninf(y) or isnaninf(z) or isnaninf(w) then return end
+    if not (x and y and z and w) then
+      rotFails.short = rotFails.short + 1
+      lastRotRaw = data:sub(1, 64)
+      lastRotInfo = string.format('short read at argPos=%d len=%d', argPos, #data)
+      return
+    end
+    if isnaninf(x) or isnaninf(y) or isnaninf(z) or isnaninf(w) then
+      rotFails.nonfinite = rotFails.nonfinite + 1
+      lastRotRaw = data:sub(1, 64)
+      lastRotInfo = string.format('nonfinite: %g %g %g %g', x, y, z, w)
+      return
+    end
     local n2 = x*x + y*y + z*z + w*w
     -- reject junk; tolerate small drift then normalize (per spec: reject
     -- if |norm^2 - 1| > 0.1).
-    if isnaninf(n2) or n2 < 1e-6 or math.abs(n2 - 1) > 0.1 then return end
+    if isnaninf(n2) or n2 < 1e-6 or math.abs(n2 - 1) > 0.1 then
+      rotFails.norm = rotFails.norm + 1
+      lastRotRaw = data:sub(1, 64)
+      lastRotInfo = string.format('norm2=%.6f from %g %g %g %g', n2, x, y, z, w)
+      return
+    end
     local inv = 1 / math.sqrt(n2)
     phoneQuat = phoneToBeamNG({ x*inv, y*inv, z*inv, w*inv })
     stats.oscRot = stats.oscRot + 1
@@ -386,6 +411,14 @@ M.debug = function()
     phoneQuat and 'yes' or 'NO', phonePos and 'yes' or 'NO',
     refQuat and 'yes' or 'NO', refPos and 'yes' or 'NO', tostring(pendingRecenter)))
   print(string.format('  camera: isFreeCamera=%s', tostring(commands.isFreeCamera())))
+  print(string.format('  rotFails: tags=%d short=%d nonfinite=%d norm=%d',
+    rotFails.tags, rotFails.short, rotFails.nonfinite, rotFails.norm))
+  if lastRotInfo then print('  lastRotFail: ' .. lastRotInfo) end
+  if lastRotRaw then
+    local hex = {}
+    for i = 1, #lastRotRaw do hex[i] = string.format('%02x', lastRotRaw:byte(i)) end
+    print('  lastRotRaw: ' .. table.concat(hex))
+  end
 end
 
 M.setEnabled = function(v)
