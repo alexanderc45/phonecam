@@ -62,11 +62,13 @@ function C:update(data)
   local baseRot = data.res.rot
 
   -- ---- position (6DOF) -------------------------------------------------
+  -- In-place writes (:setAdd/:set), matching how the game's own camera
+  -- modes mutate data.res — safest against any aliasing of the res objects.
   local pd = pc.getPosDelta and pc.getPosDelta(data.dtReal)
   if pd then
-    local p = data.res.pos + (baseRot * pd)   -- local offset -> world
-    if not isnaninf(p:squaredLength()) then
-      data.res.pos = p
+    local off = baseRot * pd                  -- local offset -> world
+    if not isnaninf(off:squaredLength()) then
+      data.res.pos:setAdd(off)
     end
   end
 
@@ -75,7 +77,7 @@ function C:update(data)
   if delta then
     local r = baseRot * delta                 -- POST-multiply: camera-local
     if not isnaninf(r:squaredNorm()) then
-      data.res.rot = r
+      data.res.rot:set(r)
       if pc._filterTick then pc._filterTick('applied') end
     end
   end

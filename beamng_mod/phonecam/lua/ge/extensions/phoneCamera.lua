@@ -439,6 +439,18 @@ M.debug = function()
   print(string.format('  filter: tick=%d applied=%d  phonelookFile=%s',
     filterStats.tick, filterStats.applied,
     tostring(FS:fileExists('/lua/ge/extensions/core/cameraModes/phonelook.lua'))))
+  if phoneQuat then
+    print(string.format('  phoneQuat: %.4f %.4f %.4f %.4f', phoneQuat.x, phoneQuat.y, phoneQuat.z, phoneQuat.w))
+  end
+  if refQuat and phoneQuat then
+    local d = refQuat:inversed() * phoneQuat
+    local ang = 2 * math.acos(math.min(1, math.abs(d.w))) * 180 / math.pi
+    print(string.format('  delta since recenter: %.4f %.4f %.4f %.4f  (angle %.1f deg)', d.x, d.y, d.z, d.w, ang))
+  end
+  if phonePos and refPos then
+    local pd = phonePos - refPos
+    print(string.format('  posDelta since recenter: %.3f %.3f %.3f m', pd.x, pd.y, pd.z))
+  end
   if lastRotInfo then print('  lastRotFail: ' .. lastRotInfo) end
   if lastRotRaw then
     local hex = {}
