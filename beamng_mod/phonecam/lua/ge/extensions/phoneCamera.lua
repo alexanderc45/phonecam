@@ -160,6 +160,19 @@ local lastRotClock = nil      -- frameClock at last rotation packet; a >2s
                               -- gap in the stream triggers auto-recenter
                               -- (console-free re-zero: toggle LOTA's stream)
 
+-- ---- Recenter stability gate ------------------------------------------
+-- Root cause of session-to-session axis inconsistency: recenter used to
+-- fire on the FIRST packet — i.e. whatever pose the phone was in while the
+-- user tapped LOTA's shutter (usually pointed at the floor/desk). Now a
+-- pending recenter only executes once the phone is (a) roughly level (view
+-- axis within ~45deg of horizontal) and (b) held steady (< ~20deg/s) for
+-- STABLE_HOLD_S. Tap the shutter however you like; the frame locks when
+-- you actually raise and aim the phone.
+local STABLE_HOLD_S = 0.7
+local prevRawQuat = nil       -- previous rotation sample (rate estimation)
+local lastUnstableClock = nil -- frameClock when the pose was last unstable
+local recenterDeferLogged = false
+
 -- Real-time seconds accumulated from onUpdate's dtReal. Used only as the
 -- clock for the UI app's live-rate math, so we never touch a wall-clock
 -- API (dtReal is the engine's real frame delta and always available here).
@@ -438,6 +451,26 @@ local function handleOsc(data)
     -- backgrounded) means the user repositioned — re-derive the frame.
     if lastRotClock and (frameClock - lastRotClock) > 2 then
       pendingRecenter = true
+      recenterDeferLogged = false
+    end
+
+    -- Stability tracking for the recenter gate: mark the pose unstable if
+    -- it is rotating fast or the view axis is near-vertical (floor/ceiling).
+    do
+      local unstable = false
+      if prevRawQuat then
+        local dt = frameClock - (lastRotClock or frameClock)
+        local dot = math.abs(lastRawQuat[1]*prevRawQuat[1] + lastRawQuat[2]*prevRawQuat[2]
+                           + lastRawQuat[3]*prevRawQuat[3] + lastRawQuat[4]*prevRawQuat[4])
+        local ang = 2 * math.acos(math.min(1, dot))
+        if dt > 1e-4 and (ang / dt) > 0.35 then unstable = true end  -- > ~20 deg/s
+      end
+      local iq = { -lastRawQuat[1], -lastRawQuat[2], -lastRawQuat[3], lastRawQuat[4] }
+      local ux, uy, uz = qRotateVec(iq, 0, 1, 0)
+      local vdot = ux*VIEW_AXIS_DEV[1] + uy*VIEW_AXIS_DEV[2] + uz*VIEW_AXIS_DEV[3]
+      if math.abs(vdot) > 0.7 then unstable = true end  -- view within ~45deg of vertical
+      if unstable or not lastUnstableClock then lastUnstableClock = frameClock end
+      prevRawQuat = lastRawQuat
     end
     lastRotClock = frameClock
 
@@ -604,8 +637,19 @@ local function onUpdate(dtReal)
   -- Process a pending recenter as soon as we have an orientation. This
   -- runs regardless of camera mode so the filter's reference is valid in
   -- orbit/hood/cab/chase, not just free cam.
-  if pendingRecenter and phoneQuat then
+  -- A pending recenter waits for the stability gate: phone roughly level
+  -- and steady for STABLE_HOLD_S (see the gate's comment). JSON path has no
+  -- stability data (lastUnstableClock stays nil until OSC flows) — treat it
+  -- as immediately stable to preserve legacy web-client behavior.
+  local recenterReady = (lastUnstableClock == nil)
+      or ((frameClock - lastUnstableClock) >= STABLE_HOLD_S)
+  if pendingRecenter and phoneQuat and not recenterReady and not recenterDeferLogged then
+    recenterDeferLogged = true
+    print('phoneCamera: recenter armed - hold the phone level and steady to lock the frame')
+  end
+  if pendingRecenter and phoneQuat and recenterReady then
     pendingRecenter = false
+    recenterDeferLogged = false
     -- Gravity mode: re-derive the axis correction from THIS grip's attitude
     -- before capturing references, so pitch/roll align to however the phone
     -- is actually held right now. Falls back to the previous correction when
