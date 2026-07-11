@@ -177,6 +177,14 @@ local STABLE_HOLD_S = 0.7
 local prevRawQuat = nil       -- previous rotation sample (rate estimation)
 local lastUnstableClock = nil -- frameClock when the pose was last unstable
 local recenterDeferLogged = false
+-- Self-healing: a SUSTAINED unstable episode (phone stowed in a lap/pocket,
+-- pointed at the floor, waved around for > STOW_REARM_S) re-arms the
+-- recenter automatically. ARKit's visual-inertial tracking drifts or jumps
+-- when the camera is covered, so the old reference frame is garbage after a
+-- stow — re-locking on the next steady, level hold heals it without any
+-- user interaction.
+local STOW_REARM_S = 2.0
+local unstableSince = nil     -- frameClock when the current unstable episode began
 
 -- Real-time seconds accumulated from onUpdate's dtReal. Used only as the
 -- clock for the UI app's live-rate math, so we never touch a wall-clock
@@ -475,6 +483,18 @@ local function handleOsc(data)
       local vdot = ux*VIEW_AXIS_DEV[1] + uy*VIEW_AXIS_DEV[2] + uz*VIEW_AXIS_DEV[3]
       if math.abs(vdot) > 0.7 then unstable = true end  -- view within ~45deg of vertical
       if unstable or not lastUnstableClock then lastUnstableClock = frameClock end
+      -- Sustained instability = the phone was stowed; re-arm the recenter
+      -- (the stability gate holds it until the phone is raised steady again).
+      if unstable then
+        if not unstableSince then unstableSince = frameClock end
+        if (frameClock - unstableSince) > STOW_REARM_S and not pendingRecenter then
+          pendingRecenter = true
+          recenterDeferLogged = false
+          log('I', 'phoneCamera', 'phone stowed/unsteady - frame will re-lock on the next steady hold')
+        end
+      else
+        unstableSince = nil
+      end
       prevRawQuat = lastRawQuat
     end
     lastRotClock = frameClock
