@@ -428,7 +428,12 @@ local function handleOsc(data)
       return
     end
     local inv = 1 / math.sqrt(n2)
-    lastRawQuat = { x*inv, y*inv, z*inv, w*inv }  -- raw sample; feeds calibration/recenter
+    -- CONJUGATED on ingest: field-verified that LOTA sends the quaternion in
+    -- the opposite convention to what the pipeline assumes (with the frame
+    -- gravity-aligned, every axis tracked correctly but uniformly inverted —
+    -- the signature of a world->device vs device->world mismatch). One
+    -- conjugation here fixes rotation AND the position frame consistently.
+    lastRawQuat = { -x*inv, -y*inv, -z*inv, w*inv }
 
     -- Console-free re-zero: a gap in the stream (LOTA toggled off/on, app
     -- backgrounded) means the user repositioned — re-derive the frame.
