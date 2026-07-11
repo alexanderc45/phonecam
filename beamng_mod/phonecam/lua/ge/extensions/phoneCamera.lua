@@ -428,12 +428,11 @@ local function handleOsc(data)
       return
     end
     local inv = 1 / math.sqrt(n2)
-    -- CONJUGATED on ingest: field-verified that LOTA sends the quaternion in
-    -- the opposite convention to what the pipeline assumes (with the frame
-    -- gravity-aligned, every axis tracked correctly but uniformly inverted —
-    -- the signature of a world->device vs device->world mismatch). One
-    -- conjugation here fixes rotation AND the position frame consistently.
-    lastRawQuat = { -x*inv, -y*inv, -z*inv, w*inv }
+    -- NOTE: do NOT conjugate here — that was tried and it scrambles the
+    -- gravity frame derivation (which reads this same quat). The uniform
+    -- direction flip is corrected at the DELTA level in getHeadLookDelta,
+    -- after all frame math (see comment there).
+    lastRawQuat = { x*inv, y*inv, z*inv, w*inv }
 
     -- Console-free re-zero: a gap in the stream (LOTA toggled off/on, app
     -- backgrounded) means the user repositioned — re-derive the frame.
@@ -522,7 +521,13 @@ end
 -- no data. Self-guards against NaN so the filter never gets a bad quat.
 M.getHeadLookDelta = function(dtReal)
   if not enabled or not refQuat or not phoneQuat then return nil end
-  local target = refQuat:inversed() * phoneQuat
+  -- INVERTED delta (phone^-1 * ref instead of ref^-1 * phone): field
+  -- testing on the gravity-frame build showed every axis tracking
+  -- correctly but uniformly opposite, so the camera applies the exact
+  -- inverse of the phone's relative rotation. Flipping the delta AFTER
+  -- all frame math keeps the gravity derivation untouched (conjugating
+  -- the raw quat instead breaks it — tried).
+  local target = phoneQuat:inversed() * refQuat
   local t = 1 - math.exp(-(dtReal or 0.016) / smoothingTau)
   currentDelta = currentDelta and nlerp(currentDelta, target, t) or target
   if isnaninf(currentDelta:squaredNorm()) then currentDelta = nil; return nil end
@@ -644,7 +649,8 @@ local function onUpdate(dtReal)
   end
 
   -- Relative rotation since recenter, applied to the camera base.
-  local target = camBase * (refQuat:inversed() * phoneQuat)
+  -- Inverted delta, matching getHeadLookDelta (see comment there).
+  local target = camBase * (phoneQuat:inversed() * refQuat)
 
   -- Framerate-independent exponential smoothing: t = 1 - e^(-dt/tau).
   local t = 1 - math.exp(-(dtReal or 0.016) / smoothingTau)
