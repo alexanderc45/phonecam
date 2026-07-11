@@ -79,9 +79,13 @@ function C:update(data)
   end
 
   -- ---- rotation (head-look) -------------------------------------------
+  -- getHeadLookDelta returns a WORLD-frame rigid delta (the phone's
+  -- rotation since neutral, in the camera-aligned world frame) — so it is
+  -- PRE-multiplied, trackir-style. Field-verified: the same frame mapping
+  -- makes position perfect.
   local delta = pc.getHeadLookDelta(data.dtReal)
   if delta then
-    local r = baseRot * delta                 -- POST-multiply: camera-local
+    local r = delta * baseRot                 -- PRE-multiply: world-frame
     if not isnaninf(r:squaredNorm()) then
       data.res.rot:set(r)
       if pc._filterTick then pc._filterTick('applied') end

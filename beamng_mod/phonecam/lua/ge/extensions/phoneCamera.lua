@@ -121,6 +121,14 @@ local camYaw, camPitch, camRoll = 0, 0, 0   -- latest mapped angles (radians)
 local rawPhonePos = nil     -- latest phone position {x,y,z}, raw meters
 
 local hasNeutral = false    -- has a recenter captured a reference yet?
+local neutralQuat = nil     -- raw quat {x,y,z,w} captured at recenter: the
+                            -- reference for the RIGID rotation delta (field
+                            -- verdict: walking is perfect => the world->camera
+                            -- axis mapping is confirmed; rotation must be the
+                            -- plain relative rotation since neutral, NOT
+                            -- world-axis Euler routing, which behaves like a
+                            -- horizon/orientation auto-correction)
+local smDeltaQ = nil        -- smoothed world-frame delta quat {x,y,z,w}
 local neutralYaw, neutralPitch, neutralRoll = 0, 0, 0
 local neutralPos = nil      -- {x,y,z} captured at recenter (may be nil pre-position)
 
@@ -489,18 +497,41 @@ end
 -- in BeamNG camera axes (x=right, y=forward, z=up): yaw about +z, pitch
 -- about +x, roll about +y. Each channel carries its SIGN_* constant so a
 -- residual inversion is a one-line fix. Returns nil when disabled / no data.
+-- RIGID relative rotation since neutral (user-requested model: "all
+-- movement is based on the difference in rotation from the values when the
+-- streaming starts"). The world-frame delta q_phone * q_neutral^-1 is
+-- computed in raw ARKit space, nlerp-smoothed, then mapped into the
+-- camera-aligned frame with the SAME axis mapping position uses (which the
+-- field verified as perfect): world (x, y, z) -> cam (right, up, forward
+-- via (x, -z, y)). Returned as a WORLD-frame delta — phonelook and the
+-- free-cam writer PRE-multiply it (world-frame composition, trackir-style),
+-- unlike the old camera-local post-multiply.
 M.getHeadLookDelta = function(dtReal)
-  if not enabled then return nil end
-  local dy, dp, dr = rawAngleDeltas()
-  if not dy then return nil end
+  if not enabled or not hasNeutral or not lastRawQuat or not neutralQuat then return nil end
+  -- world-frame delta: q_phone (x) q_neutral^-1  (Hamilton, raw ARKit space)
+  local nx, ny, nz, nw = -neutralQuat[1], -neutralQuat[2], -neutralQuat[3], neutralQuat[4]
+  local px, py, pz, pw = lastRawQuat[1], lastRawQuat[2], lastRawQuat[3], lastRawQuat[4]
+  local dx = pw*nx + px*nw + py*nz - pz*ny
+  local dy = pw*ny + py*nw + pz*nx - px*nz
+  local dz = pw*nz + pz*nw + px*ny - py*nx
+  local dw = pw*nw - px*nx - py*ny - pz*nz
+  -- nlerp smoothing in raw component space (short-arc sign pick)
   local a = math.min(1, (dtReal or 0.016) * rotResponse())
-  smYaw   = smYaw   and (smYaw   + (dy - smYaw)   * a) or dy
-  smPitch = smPitch and (smPitch + (dp - smPitch) * a) or dp
-  smRoll  = smRoll  and (smRoll  + (dr - smRoll)  * a) or dr
-  local qYaw   = quatAxis(0, 0, 1, smYaw   * SIGN_YAW)    -- +z
-  local qPitch = quatAxis(1, 0, 0, smPitch * SIGN_PITCH)  -- +x
-  local qRoll  = quatAxis(0, 1, 0, smRoll  * SIGN_ROLL)   -- +y
-  local q = qYaw * qPitch * qRoll
+  if smDeltaQ then
+    local dot = smDeltaQ[1]*dx + smDeltaQ[2]*dy + smDeltaQ[3]*dz + smDeltaQ[4]*dw
+    local s = dot < 0 and -1 or 1
+    local qx = smDeltaQ[1] + (s*dx - smDeltaQ[1]) * a
+    local qy = smDeltaQ[2] + (s*dy - smDeltaQ[2]) * a
+    local qz = smDeltaQ[3] + (s*dz - smDeltaQ[3]) * a
+    local qw = smDeltaQ[4] + (s*dw - smDeltaQ[4]) * a
+    local n = math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+    if n < 1e-9 then return nil end
+    smDeltaQ = { qx/n, qy/n, qz/n, qw/n }
+  else
+    smDeltaQ = { dx, dy, dz, dw }
+  end
+  -- ARKit world -> BeamNG camera-aligned frame: (x, y, z, w) -> (x, -z, y, w)
+  local q = quat(smDeltaQ[1], -smDeltaQ[3], smDeltaQ[2], smDeltaQ[4])
   if isnaninf(q:squaredNorm()) then return nil end
   return q
 end
@@ -542,6 +573,8 @@ local function applyRecenter()
   neutralYaw, neutralPitch, neutralRoll = camYaw, camPitch, camRoll
   hasNeutral = true
   neutralPos = rawPhonePos and { rawPhonePos[1], rawPhonePos[2], rawPhonePos[3] } or nil
+  neutralQuat = lastRawQuat and { lastRawQuat[1], lastRawQuat[2], lastRawQuat[3], lastRawQuat[4] } or nil
+  smDeltaQ = nil
   smYaw, smPitch, smRoll = nil, nil, nil
   smRight, smForward, smUp = nil, nil, nil
   if commands.isFreeCamera() then
@@ -585,7 +618,7 @@ local function onUpdate(dtReal)
   if not camBase then camBase = getCameraQuat() end  -- entered free cam post-recenter
   local delta = M.getHeadLookDelta(dtReal)
   if not delta then return end
-  local target = camBase * delta
+  local target = delta * camBase   -- PRE-multiply: delta is world-frame
   local pos = getCameraPosition()
   setCameraPosRot(pos.x, pos.y, pos.z, target.x, target.y, target.z, target.w)
 end
