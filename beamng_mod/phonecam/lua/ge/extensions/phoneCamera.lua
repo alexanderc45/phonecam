@@ -154,7 +154,12 @@ local calibA, calibP = nil, nil  -- captured neutral quat / pitch axis
 -- fixes the "auto-recenter fired while the phone lay on the desk" frame
 -- scramble that a fixed correction cannot handle.
 -- gripAuto=false (wizard or manual preset) locks holdQuat instead.
-local VIEW_AXIS_DEV = { 0, 1, 0 }
+-- ARKit camera convention: the lens looks along device -Z. (An earlier
+-- value of (0,1,0) was inherited from a brute-force fit to sessions whose
+-- reference frame was corrupt — it put "forward" on the user's right and
+-- swapped pitch/roll while gravity kept yaw correct. Field symptom matched
+-- exactly; -Z is also the documented ARKit camera axis.)
+local VIEW_AXIS_DEV = { 0, 0, -1 }
 local gripAuto = true
 local lastRotClock = nil      -- frameClock at last rotation packet; a >2s
                               -- gap in the stream triggers auto-recenter
