@@ -169,7 +169,7 @@ angular.module('beamng.apps')
 '',
 '  <!-- Controls -->',
 '  <div class="sec">controls</div>',
-'  <button class="recenter" ng-click="recenter()">RECENTER</button>',
+'  <button class="recenter" ng-click="setNeutral()">SET NEUTRAL (hold pose, click)</button>',
 '',
 '  <div class="ctl">',
 '    <label><input type="checkbox" ng-model="ctrl.enabled" ng-change="applyEnabled()"> Enabled</label>',
@@ -303,6 +303,14 @@ angular.module('beamng.apps')
       $scope.calibrate = function () {
         bngApi.engineLua('extensions.phoneCamera.calibrate()');
         poll();  // refresh the step label promptly
+      };
+      // SET NEUTRAL: capture the current phone pose as the baseline for
+      // rotation and movement IMMEDIATELY (bypasses the stability gate —
+      // an explicit click is user intent). Falls back to recenter() on
+      // older Lua that predates setNeutral.
+      $scope.setNeutral = function () {
+        bngApi.engineLua(
+          '(extensions.phoneCamera.setNeutral or extensions.phoneCamera.recenter)()');
       };
       $scope.recenter = function () {
         bngApi.engineLua('extensions.phoneCamera.recenter()');

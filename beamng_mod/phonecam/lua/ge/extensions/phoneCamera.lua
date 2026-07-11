@@ -185,6 +185,8 @@ local recenterDeferLogged = false
 -- user interaction.
 local STOW_REARM_S = 2.0
 local unstableSince = nil     -- frameClock when the current unstable episode began
+local forceRecenter = false   -- setNeutral(): explicit user intent bypasses the
+                              -- stability gate and captures the pose right now
 
 -- Real-time seconds accumulated from onUpdate's dtReal. Used only as the
 -- clock for the UI app's live-rate math, so we never touch a wall-clock
@@ -666,7 +668,8 @@ local function onUpdate(dtReal)
   -- and steady for STABLE_HOLD_S (see the gate's comment). JSON path has no
   -- stability data (lastUnstableClock stays nil until OSC flows) — treat it
   -- as immediately stable to preserve legacy web-client behavior.
-  local recenterReady = (lastUnstableClock == nil)
+  local recenterReady = forceRecenter
+      or (lastUnstableClock == nil)
       or ((frameClock - lastUnstableClock) >= STABLE_HOLD_S)
   if pendingRecenter and phoneQuat and not recenterReady and not recenterDeferLogged then
     recenterDeferLogged = true
@@ -674,6 +677,7 @@ local function onUpdate(dtReal)
   end
   if pendingRecenter and phoneQuat and recenterReady then
     pendingRecenter = false
+    forceRecenter = false
     recenterDeferLogged = false
     -- Gravity mode: re-derive the axis correction from THIS grip's attitude
     -- before capturing references, so pitch/roll align to however the phone
@@ -733,6 +737,15 @@ end
 
 -- Public API (console: extensions.phoneCamera.<fn>) ------------
 M.recenter = function() pendingRecenter = true end
+
+-- Explicit "this pose is my neutral": captures the CURRENT pose as the
+-- baseline for rotation AND movement immediately, bypassing the stability
+-- gate (which only governs automatic recenters). Wired to the UI button.
+M.setNeutral = function()
+  pendingRecenter = true
+  forceRecenter = true
+  log('I', 'phoneCamera', 'setNeutral: capturing current pose as the baseline')
+end
 
 -- One-shot status dump via print() (always visible in the console
 -- regardless of log-level filters). The first place to look when
